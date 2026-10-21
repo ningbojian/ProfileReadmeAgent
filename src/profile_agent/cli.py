@@ -264,6 +264,7 @@ def run(
             updated_at=now_bj.strftime("%Y-%m-%d %H:%M") + "（北京时间）",
             short_intros=short_intros,
             visitors_badge=cfg.readme.visitors_badge,
+            key_env=cfg.ai.key_env_name,
         )
         content = render_readme(ctx, template_path)
 

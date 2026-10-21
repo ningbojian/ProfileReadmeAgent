@@ -87,6 +87,18 @@ def test_render_without_bio_leaves_comment():
     assert "你好，我是 Alice，一名热爱开源的工程师。" not in out
 
 
+def test_render_bio_comment_names_configured_key_env():
+    """简介缺失的占位注释应指向用户实际配置的 secret 名，而非写死某一家。"""
+    ctx = _ctx()
+    ctx.bio_text = ""
+    # 默认（anthropic）：指 ANTHROPIC_API_KEY
+    assert "配置 ANTHROPIC_API_KEY 后" in render_readme(ctx, TEMPLATE)
+    # 换服务商的用户（key_env=AI_API_KEY，如 MiMo）：必须指 AI_API_KEY
+    out = render_readme(dataclasses.replace(ctx, key_env="AI_API_KEY"), TEMPLATE)
+    assert "配置 AI_API_KEY 后" in out
+    assert "配置 ANTHROPIC_API_KEY 后" not in out
+
+
 def test_render_without_update_time():
     ctx = _ctx()
     ctx.include_update_time = False

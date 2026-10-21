@@ -6,7 +6,7 @@
 {% if bio_text %}
 {{ bio_text }}
 {% else %}
-<!-- AI 简介暂不可用：配置 ANTHROPIC_API_KEY 后运行 profile-agent 即可生成 -->
+<!-- AI 简介暂不可用：配置 {{ key_env }} 后运行 profile-agent 即可生成 -->
 {% endif %}
 
 {% if cards_show %}

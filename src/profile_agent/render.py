@@ -31,6 +31,7 @@ def render_readme(ctx: TemplateContext, template_path: Path) -> str:
         updated_at=ctx.updated_at,
         short_intros=ctx.short_intros,
         visitors_badge=ctx.visitors_badge,
+        key_env=ctx.key_env,
     )
 
 
