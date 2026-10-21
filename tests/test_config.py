@@ -19,7 +19,9 @@ def test_minimal_config_uses_defaults(tmp_path):
     assert cfg.github.username == "alice"
     assert cfg.schedule.enabled is True
     assert cfg.repos.exclude_forks is True
-    assert cfg.featured.count == 6
+    assert cfg.featured.count == 0  # 默认展示全部仓库
+    assert cfg.featured.recency_days == 0  # 默认不限推送时间
+    assert cfg.projects.featured_only is False  # 默认全部仓库参与介绍生成
     assert cfg.readme.template == "templates/profile.md.j2"
     assert cfg.ai.enabled is True
     assert cfg.ai.model == "claude-opus-5-5"

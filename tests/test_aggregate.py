@@ -90,6 +90,24 @@ def test_featured_sort_by_stars():
     assert stars == sorted(stars, reverse=True)
 
 
+def test_featured_count_zero_returns_all():
+    """count: 0 = 不限量：过滤后全部入选，不再截断。"""
+    feat = FeaturedConfig(count=0, min_stars=0, recency_days=0, sort_by="stars")
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    featured = select_featured(repos, feat, now=NOW)
+    assert {r.full_name for r in featured} == {r.full_name for r in repos}
+
+
+def test_featured_count_zero_still_applies_recency_filter():
+    """count 只解「截断」不解「过滤」：recency_days > 0 时老仓库照样被排除。"""
+    feat = FeaturedConfig(count=0, min_stars=0, recency_days=365, sort_by="score")
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    featured = select_featured(repos, feat, now=NOW)
+    names = {r.full_name for r in featured}
+    assert "alice/old-thing" not in names  # 2020 年 push，超出 365 天
+    assert "alice/cool-tool" in names
+
+
 def test_fingerprint_stable_and_sensitive():
     repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
     totals = compute_totals(_user(), repos)

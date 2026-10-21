@@ -14,9 +14,9 @@ repos:
   exclude: [] # 仓库名黑名单，如 ["you/you"]（profile 仓库自身）
 
 featured:
-  count: 6
+  count: 0 # 上主页的项目数上限；0 = 全部
   min_stars: 0
-  recency_days: 365 # 只考虑此时间内有 push 的仓库；0 = 不限
+  recency_days: 0 # 只考虑此时间内有 push 的仓库；0 = 不限（与 count: 0 配合 = 真·全部）
   sort_by: "score" # score | stars | updated
   score_stars_weight: 1.0
   score_recency_weight: 0.5
@@ -51,7 +51,7 @@ ai:
 projects:
   enabled: true # true = 生成项目介绍/简历素材（AI 内容走 PR 审核）
   dir: "docs/projects"
-  featured_only: true # false = 给全部仓库生成
+  featured_only: false # true = 只给精选列表（featured）生成；false = 全部仓库都生成
   include: [] # 非空 = 只给这些仓库名生成（多选），如 ["cool-tool", "web-app"]
   exclude: [] # 永远跳过这些仓库名
   review_via_pr: true # AI 生成内容走 PR 人工审核；false = 直接提交

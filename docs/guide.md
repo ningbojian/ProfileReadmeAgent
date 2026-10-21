@@ -1,11 +1,11 @@
 # GitHub Overview Auto Agent 使用指南
 
-自动维护你的 GitHub 个人主页 README（`你的用户名/你的用户名` 仓库）：拉取公开仓库数据、整理统计、精选项目、用 AI 生成中文简介，并做增量检测省额度。
+自动维护你的 GitHub 个人主页 README（`你的用户名/你的用户名` 仓库）：拉取公开仓库数据、整理统计、项目列表（默认全部仓库）、用 AI 生成中文简介，并做增量检测省额度。
 
 ## 它做什么
 
 1. **拉数据**：通过 GitHub API 获取你的公开仓库（star、语言、最近 push 等）
-2. **精选项目**：按 star 与活跃度打分，自动挑出最值得展示的项目
+2. **项目列表**：全部公开仓库按 star 与活跃度排序展示在主页（默认全部；想只展示一部分在 `featured` 里配）
 3. **生成统计**：中文统计表格 + github-readme-stats 可视化卡片
 4. **AI 简介**：把仓库数据交给 Claude，生成 100–150 字中文简介
 5. **增量更新**：数据没变化就不调 AI、不改文件、不产生提交
@@ -125,11 +125,11 @@ projects:
 
 > **不配置也完全能用**：README、统计、定时更新都不受影响。区别只在勾选框：已有勾选框照常勾选，但新建/删除的仓库不会自动增删（运行日志有 warning 提醒）；从模板新建、还没有勾选框的仓库则完全不生成（保持纯净）。这两种情况都可用 `projects_repos` 输入框点名，或在本地跑 `--repos 仓库名`。另外注意：如果你编辑过 workflow 文件（比如改了 cron），内置 token 同样推不上去，也会需要这个 secret。
 
-**命令行/脚本点名**（自动化用）：`gh workflow run "Update Profile README" -f projects_repos=shiyuan,agri-ecommerce-platform`，或在对话框的 `projects_repos` 输入框填逗号分隔仓库名（留空=按 config 规则；`all`=全部精选）。点名的仓库同样是强制重新生成语义。
+**命令行/脚本点名**（自动化用）：`gh workflow run "Update Profile README" -f projects_repos=shiyuan,agri-ecommerce-platform`，或在对话框的 `projects_repos` 输入框填逗号分隔仓库名（留空=按 config 规则；`all`=按 config 规则的全部，与留空等效）。点名的仓库同样是强制重新生成语义。
 
 **每次运行都有逐仓库明细**：运行完成后打开该次运行页面，Summary 里有一张表，逐仓库列出这次做了什么（项目介绍：跳过/已重新生成/数据版；主页描述补位：复用/新生成/失败）。
 
-**主页「暂无描述」自动补位**：精选项目里 description 为空的仓库，会用它自己 README 的内容生成一句 ≤80 字的中文短描述顶上（不再显示「暂无描述」）。不想要这个行为：`ai.fill_empty_descriptions: false`。profile 仓库自身（`用户名/用户名`）始终除外——它的 README 是工具自己的输出，若也补位会自引用导致每轮重生成、反复开 PR烧额度。
+**主页「暂无描述」自动补位**：项目列表里 description 为空的仓库，会用它自己 README 的内容生成一句 ≤80 字的中文短描述顶上（不再显示「暂无描述」）。不想要这个行为：`ai.fill_empty_descriptions: false`。profile 仓库自身（`用户名/用户名`）始终除外——它的 README 是工具自己的输出，若也补位会自引用导致每轮重生成、反复开 PR烧额度。
 
 介绍内容以**各仓库的 README 为主要事实来源**（只有真正要生成/更新某个仓库的介绍时才会去拉它的 README，无变化不调用）；仓库没有 README 时退回只用 GitHub 上的描述等事实信息。
 
@@ -159,9 +159,9 @@ repos:
   exclude_archived: false  # 是否排除已归档仓库
   exclude: ["you/you"]     # 黑名单（建议排除 profile 仓库自身）
 featured:
-  count: 6                 # 精选项目个数
+  count: 0                 # 上主页的项目数上限；0 = 全部
   min_stars: 0             # 入选最低 star
-  recency_days: 365        # 只考虑一年内有 push 的仓库；0 = 不限
+  recency_days: 0          # 只考虑最近 N 天有 push 的仓库；0 = 不限（要「真·全部」保持 0）
   sort_by: "score"         # score | stars | updated
   score_stars_weight: 1.0
   score_recency_weight: 0.5
@@ -180,11 +180,11 @@ ai:
   max_repos: 15            # 最多把多少仓库喂给 AI
   max_age_days: 14         # 简介最长复用天数
   prompt_version: 1        # 改了 prompt 后 +1 可强制重新生成
-  fill_empty_descriptions: true  # 精选项目 description 为空时，用其 README 生成短描述补位
+  fill_empty_descriptions: true  # 项目列表里 description 为空时，用其 README 生成短描述补位
 projects:
   enabled: false           # true = 生成项目介绍/简历素材（默认关闭，开启前先配好 AI key）
   dir: "docs/projects"
-  featured_only: true      # false = 给全部仓库生成
+  featured_only: false     # true = 只给精选列表生成；false = 全部仓库都生成介绍
   include: []              # 多选白名单，非空时只生成这些仓库
   exclude: []              # 黑名单
   review_via_pr: true      # AI 内容走 PR 审核（推荐）

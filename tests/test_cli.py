@@ -40,7 +40,7 @@ def test_dry_run_prints_readme_and_writes_nothing(tmp_path, capsys):
     code = _run(cfg, dry_run=True)
     assert code == 0
     out = capsys.readouterr().out
-    assert "仓库统计" in out and "精选项目" in out
+    assert "仓库统计" in out and "我的项目" in out
     assert not (tmp_path / "README.md").exists()
     assert not (tmp_path / "data" / "snapshot.json").exists()
 

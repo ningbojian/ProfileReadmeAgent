@@ -413,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repos",
         default=None,
-        help="只更新这些仓库的介绍（逗号分隔仓库名，可点名非精选仓库）；all = 全部精选",
+        help="只更新这些仓库的介绍（逗号分隔仓库名，可点名任意公开仓库）；all = 按 config 规则的全部",
     )
     parser.add_argument("--fixture", default=None, help="从本地 fixture 目录读取数据（离线测试）")
     args = parser.parse_args(argv)

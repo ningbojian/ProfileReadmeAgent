@@ -55,7 +55,7 @@ def test_render_contains_chinese_sections():
     out = render_readme(_ctx(), TEMPLATE)
     assert "你好，我是" in out
     assert "仓库统计" in out
-    assert "精选项目" in out
+    assert "我的项目" in out
     assert "你好，我是 Alice" in out  # AI 简介
     assert out.lstrip().startswith("<!--")  # 自动生成标记
 

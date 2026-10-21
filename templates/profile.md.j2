@@ -44,7 +44,7 @@
 {% endfor %}
 {% endif %}
 
-## 🌟 精选项目
+## 🌟 我的项目
 
 {% for repo in featured %}
 ### [{{ repo.name }}]({{ repo.html_url }}) ⭐ {{ repo.stars }}
@@ -56,7 +56,7 @@
 {% endif %}
 
 {% else %}
-<!-- 暂无符合条件的精选项目 -->
+<!-- 暂无符合条件的项目 -->
 {% endfor %}
 
 {% if include_update_time %}

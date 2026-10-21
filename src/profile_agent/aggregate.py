@@ -78,7 +78,11 @@ def compute_totals(user: dict, repos: list[Repo]) -> Totals:
 def select_featured(
     repos: list[Repo], cfg: FeaturedConfig, *, now: datetime | None = None
 ) -> list[Repo]:
-    """挑选精选项目：min_stars / recency 过滤后按 sort_by 排序取前 count 个。"""
+    """挑选上主页展示的项目列表：min_stars / recency 过滤后按 sort_by 排序。
+
+    count 是「截断上限」：>0 取前 count 个；0 = 不限量（过滤后全部上主页）。
+    想要「真·全部」：count: 0 且 recency_days: 0（min_stars 保持 0）。
+    """
     now = now or datetime.now(timezone.utc)
 
     def age_days(r: Repo) -> float | None:
@@ -110,7 +114,7 @@ def select_featured(
     else:  # score
         candidates.sort(key=lambda r: (-score(r), r.full_name))
 
-    return candidates[: cfg.count]
+    return candidates if cfg.count <= 0 else candidates[: cfg.count]
 
 
 def stats_fingerprint(totals: Totals, repos: list[Repo], featured: list[Repo] | None = None) -> str:

@@ -35,9 +35,9 @@ class ReposConfig:
 
 @dataclass
 class FeaturedConfig:
-    count: int = 6
+    count: int = 0  # 上主页的项目数上限；0 = 全部
     min_stars: int = 0
-    recency_days: int = 365
+    recency_days: int = 0  # 只考虑最近 N 天有推送的仓库；0 = 不限
     sort_by: str = "score"
     score_stars_weight: float = 1.0
     score_recency_weight: float = 0.5
@@ -94,7 +94,7 @@ class ProjectsConfig:
 
     enabled: bool = False
     dir: str = "docs/projects"
-    featured_only: bool = True
+    featured_only: bool = False
     review_via_pr: bool = True  # 生成/更新走 PR 人工审核；false = 直接提交
     include: list[str] = field(default_factory=list)  # 非空 = 只给这些仓库名生成
     exclude: list[str] = field(default_factory=list)  # 永远跳过这些仓库名
@@ -171,9 +171,9 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
     if sort_by not in VALID_SORT_BY:
         raise ConfigError(f"featured.sort_by 只能是 {VALID_SORT_BY} 之一，收到：{sort_by}")
     cfg.featured = FeaturedConfig(
-        count=int(feat.get("count", 6)),
+        count=int(feat.get("count", 0)),
         min_stars=int(feat.get("min_stars", 0)),
-        recency_days=int(feat.get("recency_days", 365)),
+        recency_days=int(feat.get("recency_days", 0)),
         sort_by=sort_by,
         score_stars_weight=float(feat.get("score_stars_weight", 1.0)),
         score_recency_weight=float(feat.get("score_recency_weight", 0.5)),
@@ -235,7 +235,7 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
     cfg.projects = ProjectsConfig(
         enabled=bool(proj.get("enabled", True)),
         dir=str(proj.get("dir") or "docs/projects"),
-        featured_only=bool(proj.get("featured_only", True)),
+        featured_only=bool(proj.get("featured_only", False)),
         review_via_pr=bool(proj.get("review_via_pr", True)),
         include=[str(x) for x in include],
         exclude=[str(x) for x in exclude],
