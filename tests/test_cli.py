@@ -270,6 +270,78 @@ snapshot:
 # ---- 描述补位 + 逐仓库精细化 ----
 
 
+def test_project_targets_exclude_profile_repo(tmp_path):
+    """profile 仓库自身（用户名/用户名）永不生成项目介绍——它的 README 是工具输出，
+    pushed_at 又随每次 bot 提交前进，自引用会让它每轮都过期、无限重生成开 PR。"""
+    import profile_agent.cli as cli_mod
+    from profile_agent.models import Repo
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text('github:\n  username: "alice"\n', encoding="utf-8")
+    cfg = cli_mod.load_config(cfg_path)
+    alice = Repo(name="alice", full_name="alice/alice", description="", stars=0)
+    mystery = Repo(name="mystery", full_name="alice/mystery", description="", stars=3)
+    featured = [alice, mystery]
+    for featured_only in (True, False):
+        cfg.projects.featured_only = featured_only
+        targets = cli_mod._project_targets([alice, mystery], featured, cfg)
+        assert [r.name for r in targets] == ["mystery"], f"featured_only={featured_only}"
+
+
+def test_short_intro_skips_profile_repo(tmp_path, monkeypatch):
+    """补位文案同样跳过 profile 仓库自身（否则它的 README 每变一次就重生成一次）。"""
+    import profile_agent.cli as cli_mod
+
+    cfg_path = tmp_path / "config.yaml"
+    as_posix = lambda p: p.as_posix()
+    cfg_path.write_text(
+        f"""
+github:
+  username: "alice"
+projects:
+  enabled: false
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
+    calls = []
+
+    def fake(repo, cfg_ai, **kwargs):
+        calls.append(repo.full_name)
+        return "一个命令行密码生成器。"
+
+    monkeypatch.setattr(cli_mod, "generate_short_intro", fake)
+    fx = _empty_desc_fixture(tmp_path)
+    # 在 fixture 里追加 profile 仓库自身（description 同样为空）
+    repos = json.loads((fx / "repos.json").read_text(encoding="utf-8"))
+    repos.append(
+        {
+            "name": "alice",
+            "full_name": "alice/alice",
+            "description": None,
+            "language": "Python",
+            "stargazers_count": 0,
+            "forks_count": 0,
+            "private": False,
+            "fork": False,
+            "archived": False,
+            "pushed_at": "2026-10-01T00:00:00Z",
+            "html_url": "https://github.com/alice/alice",
+            "topics": [],
+        }
+    )
+    (fx / "repos.json").write_text(json.dumps(repos), encoding="utf-8")
+
+    assert run(cfg_path, fixture=fx) == 0
+    assert calls == ["alice/mystery"], calls  # alice/alice 不得出现
+
+
 def _empty_desc_fixture(tmp_path: Path) -> Path:
     """造一个 description 为空的精选仓库 fixture。"""
     fx = tmp_path / "fx"

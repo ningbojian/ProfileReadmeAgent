@@ -46,11 +46,22 @@ def _prev_repo_states(prev: Snapshot | None) -> dict[str, dict]:
 
 
 def _project_targets(repos, featured, cfg: Config) -> list:
-    """按 featured_only + include/exclude 白黑名单选出要生成介绍的仓库。"""
+    """按 featured_only + include/exclude 白黑名单选出要生成介绍的仓库。
+
+    profile 仓库自身（用户名/用户名）硬性排除：它的 README 是工具自己的输出、
+    pushed_at 又随每次 bot 提交前进——自引用会让它每轮都「过期」，无限重生成
+    项目介绍并开 PR（实测踩过），AI 额度被空烧。
+    """
     base = featured if cfg.projects.featured_only else repos
     inc = set(cfg.projects.include)
     exc = set(cfg.projects.exclude)
-    return [r for r in base if r.name not in exc and (not inc or r.name in inc)]
+    self_repo = f"{cfg.github.username}/{cfg.github.username}"
+    return [
+        r for r in base
+        if r.name not in exc
+        and (not inc or r.name in inc)
+        and r.full_name != self_repo
+    ]
 
 
 def _projects_clean(
@@ -165,9 +176,15 @@ def run(
         not no_ai and cfg.ai.enabled and os.environ.get(cfg.ai.key_env_name)
     )
     readme_of = _memo_readme(gh_client)
-    # 描述补位目标：精选里 description 为空的仓库（开关关掉或无 AI key 则为空）
+    # 描述补位目标：精选里 description 为空的仓库（开关关掉或无 AI key 则为空）；
+    # profile 仓库自身同样排除——它的「README 内容」就是工具输出，自引用会每轮都变
     short_targets = (
-        [r for r in featured if not r.description]
+        [
+            r
+            for r in featured
+            if not r.description
+            and r.full_name != f"{cfg.github.username}/{cfg.github.username}"
+        ]
         if (readme_active and ai_active and cfg.ai.fill_empty_descriptions)
         else []
     )
