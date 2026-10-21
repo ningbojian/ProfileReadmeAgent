@@ -40,6 +40,10 @@ permissions:
 
 jobs:
   update:
+    # 模板仓库守卫：本模板仓（ningbojian/ProfileReadmeAgent）自身永不运行——
+    # 否则定时跑会把模板作者的 profile 内容写回模板。用本模板生成的仓库
+    # 名字不同，此条件恒为 true，不受影响。
+    if: github.repository != 'ningbojian/ProfileReadmeAgent'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
