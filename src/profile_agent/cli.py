@@ -65,9 +65,13 @@ def _project_targets(repos, featured, cfg: Config) -> list:
 
 
 def _projects_clean(
-    targets, cfg: Config, prev: Snapshot | None, root: Path
+    targets, cfg: Config, prev: Snapshot | None, root: Path, *, ai_active: bool = False
 ) -> bool:
-    """全部目标仓库的介绍文件都已是最新且存在 → 无待生成内容。"""
+    """全部目标仓库的介绍文件都已是最新且存在 → 无待生成内容。
+
+    AI 已可用（ai_active）但某仓库还是数据版占位（ai_generated=False）时
+    视为不干净：下一次普通运行就升级重写，不让占位内容永久豁免。
+    """
     states = _prev_repo_states(prev)
     out_dir = root / cfg.projects.dir
     for r in targets:
@@ -75,6 +79,8 @@ def _projects_clean(
         if st.get("intro_hash") != intro_input_hash(r, cfg.ai):
             return False
         if not (out_dir / intro_filename(r)).exists():
+            return False
+        if ai_active and not st.get("ai_generated"):
             return False
     return True
 
@@ -207,7 +213,7 @@ def run(
         and prev.stats_config_hash == cfg_hash
         and (not readme_active or readme_path.exists())
         and bio_fresh
-        and (not projects_active or _projects_clean(proj_targets, cfg, prev, root))
+        and (not projects_active or _projects_clean(proj_targets, cfg, prev, root, ai_active=ai_active))
         and (not short_targets or _short_intros_clean(short_targets, cfg, prev, readme_of))
     ):
         print("无变化，跳过更新")

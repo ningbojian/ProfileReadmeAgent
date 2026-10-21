@@ -145,15 +145,55 @@ def _gen(monkeypatch, texts, calls):
 def test_ai_bio_generated_then_gate_skips(tmp_path, monkeypatch):
     cfg = _write_config(tmp_path)
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    _block_project_ai(monkeypatch)
+    import profile_agent.projects as projects_mod
+
+    # 项目介绍的 AI 也成功（ai_generated=True）→ 第二次运行才是整体无变化
+    monkeypatch.setattr(
+        projects_mod, "generate_project_intro", lambda repo, cfg_ai, **kw: "AI 介绍"
+    )
     calls = []
     _gen(monkeypatch, [("初始简介", True)], calls)
     assert run(cfg, fixture=FIXTURES) == 0
     assert len(calls) == 1
     assert "初始简介" in (tmp_path / "README.md").read_text(encoding="utf-8")
-    # 第二次：简介新鲜 + 数据无变 → 增量门整体跳过，不再调用
+    # 第二次：简介新鲜 + 数据无变 + 无占位待升级 → 增量门整体跳过，不再调用
     assert run(cfg, fixture=FIXTURES) == 0
     assert len(calls) == 1
+
+
+def test_ai_available_upgrades_stub_on_next_run(tmp_path, monkeypatch):
+    """占位版介绍 + AI 恢复可用 → 下一次运行自动重写为 AI 版（无需 force）。"""
+    import profile_agent.cli as cli_mod
+    import profile_agent.projects as projects_mod
+
+    cfg = _write_config(tmp_path)
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
+
+    def failing(repo, cfg_ai, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(projects_mod, "generate_project_intro", failing)
+    assert run(cfg, fixture=FIXTURES) == 0
+    intro = tmp_path / "docs" / "projects" / "cool-tool.md"
+    assert "数据版占位" in intro.read_text(encoding="utf-8")
+
+    # AI 恢复：下一次普通运行（数据没变）就应升级占位内容
+    ok: list[str] = []
+
+    def ok_gen(repo, cfg_ai, **kwargs):
+        ok.append(repo.name)
+        return "AI 升级后的介绍"
+
+    monkeypatch.setattr(projects_mod, "generate_project_intro", ok_gen)
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert ok  # 占位版被重新生成
+    assert "AI 升级后的介绍" in intro.read_text(encoding="utf-8")
+
+    # 第三次：已升级且数据无变 → 门关闭，不再调用
+    n = len(ok)
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(ok) == n
 
 
 def test_stale_bio_regenerates_even_when_data_unchanged(tmp_path, monkeypatch):

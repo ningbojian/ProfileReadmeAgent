@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def _header(repo: Repo) -> str:
     return "\n".join(lines)
 
 
-def _data_stub(repo: Repo) -> str:
+def _data_stub(repo: Repo, key_env: str = "ANTHROPIC_API_KEY") -> str:
     parts = [
         "## 项目介绍",
         "",
@@ -110,7 +111,7 @@ def _data_stub(repo: Repo) -> str:
         "",
         f"参与/维护 {repo.full_name}（{repo.language or '多语言'}），项目累计 {repo.stars} star。",
         "",
-        "> （数据版占位：配置 ANTHROPIC_API_KEY 后重新生成可获得 AI 撰写的完整版本）",
+        f"> （数据版占位：配置 {key_env} 后重新生成可获得 AI 撰写的完整版本）",
         "",
     ]
     return "\n".join(parts)
@@ -143,10 +144,11 @@ def update_project_intros(
 ) -> dict[str, dict]:
     """按仓库增量生成/更新介绍文件。返回每仓库的新状态。
 
-    - hash 匹配且文件存在 → 跳过（不调 API、不写文件、不拉 README），沿用旧状态
+    - hash 匹配且文件存在 → 跳过（不调 API、不写文件、不拉 README），沿用旧状态；
+      但若已有内容是数据版占位（ai_generated=False）而 AI 已可用 → 视为待升级，重新生成
     - force=True（点名重跑 / --force）→ 忽略 hash 复用，重新生成
     - 否则重新生成：AI 可用且成功 → AI 正文（用 fetch_readme 拉到的 README
-      作为事实来源）；否则 → 数据版占位
+      作为事实来源）；否则 → 数据版占位（失败原因写 stderr，不再静默吞掉）
     - fetch_readme 失败不影响生成（退回只用 API 事实）
     """
     out_dir = Path(proj_cfg.dir)
@@ -158,7 +160,13 @@ def update_project_intros(
         out_path = out_dir / intro_filename(repo)
         prev = prev_states.get(repo.full_name) or {}
 
-        if not force and prev.get("intro_hash") == h and out_path.exists():
+        if (
+            not force
+            and prev.get("intro_hash") == h
+            and out_path.exists()
+            # 占位版不设永久豁免：AI 可用后自动升级重写
+            and (prev.get("ai_generated") or not allow_ai)
+        ):
             # regenerated 只标记「本次运行」，复用时剥掉，防止残留到下次判断
             states[repo.full_name] = {
                 k: v for k, v in prev.items() if k != "regenerated"
@@ -177,10 +185,15 @@ def update_project_intros(
             try:
                 body = generate_project_intro(repo, ai_cfg, client=client, readme=readme)
                 ai_generated = True
-            except Exception:
-                body = None
+            except Exception as exc:
+                # 静默降级排查不动日志——这里必须留下失败原因
+                print(
+                    f"「{repo.name}」项目介绍 AI 生成失败，本次降级为数据版占位"
+                    f"（下次运行会自动重试）：{exc}",
+                    file=sys.stderr,
+                )
         if body is None:
-            body = _data_stub(repo)
+            body = _data_stub(repo, ai_cfg.key_env_name)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_header(repo) + "\n" + body.strip() + "\n", encoding="utf-8")

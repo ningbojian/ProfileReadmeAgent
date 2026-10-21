@@ -93,6 +93,7 @@ def test_update_intros_skips_unchanged_and_missing_file(tmp_path: Path):
         "alice/cool-tool": {
             "intro_hash": intro_input_hash(REPO, ai),
             "intro_generated_at": "2026-10-01T00:00:00+00:00",
+            "ai_generated": True,
         }
     }
     # 文件已存在且 hash 匹配 → 跳过，不调 AI
@@ -233,3 +234,63 @@ def test_update_intros_skips_fetch_when_unchanged(tmp_path: Path):
         fetch_readme=lambda name: fetched.append(name) or "README",
     )
     assert fetched == []  # 无变化 → 不拉 README、不调 AI
+
+
+# ---- 数据版占位的生命周期：失败要可见、AI 可用后要自动升级 ----
+
+
+def test_stub_upgraded_when_ai_becomes_available(tmp_path: Path):
+    """先无 key 跑出数据版占位；AI 可用后的下一次运行应自动重写为 AI 版。"""
+    proj = ProjectsConfig(dir=str(tmp_path / "docs/projects"))
+    infos1 = update_project_intros([REPO], proj, AIConfig(), {}, client=None, allow_ai=False)
+    assert infos1["alice/cool-tool"]["ai_generated"] is False
+    out = tmp_path / "docs" / "projects" / "cool-tool.md"
+    assert "数据版占位" in out.read_text(encoding="utf-8")
+
+    client = FakeClient(["AI 写的介绍正文"])
+    infos2 = update_project_intros(
+        [REPO], proj, AIConfig(), infos1, client=client, allow_ai=True
+    )
+    assert infos2["alice/cool-tool"]["ai_generated"] is True
+    assert len(client.calls) == 1
+    assert "AI 写的介绍正文" in out.read_text(encoding="utf-8")
+
+
+def test_stub_not_retried_when_ai_still_unavailable(tmp_path: Path):
+    """AI 仍不可用时：占位版哈希命中 → 复用跳过，不重写文件。"""
+    proj = ProjectsConfig(dir=str(tmp_path / "docs/projects"))
+    infos1 = update_project_intros([REPO], proj, AIConfig(), {}, client=None, allow_ai=False)
+    out = tmp_path / "docs" / "projects" / "cool-tool.md"
+    before = out.read_text(encoding="utf-8")
+    infos2 = update_project_intros([REPO], proj, AIConfig(), infos1, client=None, allow_ai=False)
+    assert "regenerated" not in infos2["alice/cool-tool"]  # 走了复用跳过路径
+    assert out.read_text(encoding="utf-8") == before
+
+
+def test_ai_failure_prints_warning_and_still_writes_stub(tmp_path: Path, capsys):
+    """AI 调用失败不能静默：stderr 必须留下失败原因（线上排查全靠它）。"""
+
+    class Boom:
+        def __init__(self):
+            self.messages = self
+
+        def create(self, **kwargs):
+            raise RuntimeError("boom")
+
+    proj = ProjectsConfig(dir=str(tmp_path / "docs/projects"))
+    infos = update_project_intros([REPO], proj, AIConfig(), {}, client=Boom(), allow_ai=True)
+    assert infos["alice/cool-tool"]["ai_generated"] is False
+    err = capsys.readouterr().err
+    assert "项目介绍" in err and "boom" in err
+    assert (tmp_path / "docs" / "projects" / "cool-tool.md").exists()
+
+
+def test_data_stub_names_configured_key_env(tmp_path: Path):
+    """占位文案里的 secret 名要跟配置走（MiMo 用户配的是 AI_API_KEY）。"""
+    proj = ProjectsConfig(dir=str(tmp_path / "docs/projects"))
+    update_project_intros(
+        [REPO], proj, AIConfig(key_env="AI_API_KEY"), {}, client=None, allow_ai=False
+    )
+    out = (tmp_path / "docs" / "projects" / "cool-tool.md").read_text(encoding="utf-8")
+    assert "配置 AI_API_KEY 后" in out
+    assert "ANTHROPIC_API_KEY" not in out
