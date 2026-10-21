@@ -290,25 +290,20 @@ jobs:
             exit 0
           fi
 
-          # 有 WORKFLOW_PAT 时用它推送（内置 token 无权改 workflow 文件）；
-          # 认证头方式传递，不写进 remote URL，避免 token 泄漏进日志
-          AUTH=""
+          # 有 WORKFLOW_PAT 时用它推送（内置 token 无权改 workflow 文件）。
+          # 认证头经 git config 传递，不进 remote URL，避免 token 泄漏进日志。
+          # 必须「覆盖」checkout 预设的同名认证头，不能用 -c 追加：
+          # git 会把两层配置都当 Authorization header 发出去，GitHub 报
+          # Duplicate header 400（实测踩过）。
           if [ -n "$WORKFLOW_PAT" ]; then
             AUTH=$(printf 'x-access-token:%s' "$WORKFLOW_PAT" | base64 | tr -d '\n')
+            git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
           fi
           git_push() {
-            if [ -n "$AUTH" ]; then
-              git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push "$@"
-            else
-              git push "$@"
-            fi
+            git push "$@"
           }
           git_pull_rebase() {
-            if [ -n "$AUTH" ]; then
-              git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" pull --rebase --autostash origin main
-            else
-              git pull --rebase --autostash origin main
-            fi
+            git pull --rebase --autostash origin main
           }
 
           # ---- 1. 直接提交 main：README/统计/勾选框（非 PR 模式下也含项目介绍）----
