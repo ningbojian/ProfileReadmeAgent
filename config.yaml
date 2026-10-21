@@ -2,10 +2,10 @@
 # 使用指南见 docs/guide.md
 
 schedule:
-  enabled: true # false = 关闭定时自动更新（GitHub Actions 手动触发仍可用）
+  enabled: true # false = 关闭定时更新（GitHub Actions 手动触发仍可用）
 
 github:
-  username: "ningbojian" # 必填：你的 GitHub 用户名
+  username: "" # 留空 = 自动使用仓库所有者（Use this template 拿到后无需改）
   token_env: "GITHUB_TOKEN" # token 所在环境变量名（Actions 内置 GITHUB_TOKEN 即可）
 
 repos:
@@ -29,21 +29,18 @@ readme:
     theme: "github_dark"
     show: ["stats", "top_langs", "streak"] # 可选: stats, top_langs, streak
   include_update_time: true
-  visitors_badge: true # 主页嵌入「主页访问量」计数徽章（komarev.com 免费第三方服务，页面渲染一次 +1）
+  visitors_badge: false # true = 主页嵌入「主页访问量」计数徽章（komarev.com 免费第三方服务）
 
 ai:
   enabled: true
-  # provider: "anthropic" = Claude 官方 key（ANTHROPIC_API_KEY）
+  # provider: "anthropic" = Claude 官方 key（ANTHROPIC_API_KEY），默认
   # provider: "openai"    = 任意 OpenAI 兼容接口：DeepSeek / 通义千问 / Kimi / MiMo / Ollama 等
-  #   openai 模式示例（用 MiMo 时把 base_url 换成 MiMo 开通页文档里的接口地址）：
+  #   openai 模式示例（三行照抄服务商文档）：
   #   provider: "openai"
-  #   base_url: "https://api.deepseek.com"   ← 填你服务商的地址（通常含 /v1）
-  #   key_env: "AI_API_KEY"                ← secret 名字（workflow 已内置注入，建议就叫这个）
-  #   model: "mimo-..."                      ← 填服务商文档里的模型名
+  #   base_url: "https://api.deepseek.com"   ← 服务商地址（通常含 /v1）
+  #   key_env: "AI_API_KEY"                 ← secret 名字（workflow 已内置注入，建议就叫这个）
+  #   model: "deepseek-chat"                ← 服务商文档里的模型名
   provider: "anthropic"
-  base_url: "https://api.xiaomimimo.com/anthropic"
-  key_env: "AI_API_KEY"
-  model: "mimo-v2.6-flash" # 降本可改 "claude-haiku-5-5"
   max_repos: 15 # 喂给模型的仓库数上限
   max_age_days: 14 # 简介最长复用天数，超过才重新生成
   bio_min_chars: 100
@@ -52,7 +49,7 @@ ai:
   prompt_version: 1 # 改 prompt 时 +1，强制重新生成简介
 
 projects:
-  enabled: true # true = 生成项目介绍/简历素材（需先配好 AI key）
+  enabled: true # true = 生成项目介绍/简历素材（AI 内容走 PR 审核）
   dir: "docs/projects"
   featured_only: true # false = 给全部仓库生成
   include: [] # 非空 = 只给这些仓库名生成（多选），如 ["cool-tool", "web-app"]

@@ -26,26 +26,7 @@ on:
         type: string
         default: ""
       # <<REPO_CHECKBOXES_START>>
-      MultiFuncCalculator:
-        description: "MultiFuncCalculator（⭐0 · Python）"
-        type: boolean
-        default: false
-      RoboArmDev-Showcase:
-        description: "RoboArmDev-Showcase（⭐0 · Python）"
-        type: boolean
-        default: false
-      agri-ecommerce-platform:
-        description: "agri-ecommerce-platform（⭐0 · JavaScript）"
-        type: boolean
-        default: false
-      phone-hotspot-proxy:
-        description: "phone-hotspot-proxy（⭐0 · Python）"
-        type: boolean
-        default: false
-      shiyuan:
-        description: "shiyuan（⭐0 · Python）"
-        type: boolean
-        default: false
+      # （模板不预置勾选框：配置 WORKFLOW_PAT 后第一次运行，自动生成只含你自己仓库的勾选框）
       # <<REPO_CHECKBOXES_END>>
 
 # 防止定时与手动同时运行；不取消进行中的运行

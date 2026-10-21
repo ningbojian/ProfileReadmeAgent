@@ -16,7 +16,7 @@
 
 **不需要 clone、不需要本地环境**，全程在浏览器里完成：
 
-1. **一键获取仓库**：点本仓库的 "Use this template"（或 fork），把新仓库改名为 `你的用户名/你的用户名`。
+1. **一键获取仓库**：打开模板仓库 [ningbojian/ProfileReadmeAgent](https://github.com/ningbojian/ProfileReadmeAgent)，点绿色 **"Use this template" → Create a new repository**，把新仓库改名为 `你的用户名/你的用户名`。
    > 用户名不用填：工具会自动读取仓库所有者作为用户名。
 2. **配 AI key（可选）**：仓库 → Settings → Secrets and variables → Actions → New secret，名称 `ANTHROPIC_API_KEY`，值是你的 Claude API key。不配也能用（AI 内容降级为数据版）。
 3. **配勾选框（要用勾选框必配，2 分钟）**：生成一个 classic PAT（勾 `repo` + `workflow` 两项），存成 secret `WORKFLOW_PAT`——配好第一次运行就自动生成你的勾选框；不配则对话框只有通用输入框（点名用 `projects_repos`）。详细步骤见下文「配置勾选框」。
