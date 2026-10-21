@@ -46,18 +46,52 @@
 
 ## 🌟 我的项目
 
+{% set ns = namespace(bigs=[], rests=[]) %}
 {% for repo in featured %}
-### [{{ repo.name }}]({{ repo.html_url }}) ⭐ {{ repo.stars }}
-
-{{ repo.description or short_intros.get(repo.full_name, '') or "（暂无描述）" }}
-
-{% set meta = namespace(parts=[]) %}{% if repo.language %}{% set meta.parts = meta.parts + ['`' ~ repo.language ~ '`'] %}{% endif %}{% if repo.forks %}{% set meta.parts = meta.parts + ['🍴 ' ~ repo.forks] %}{% endif %}{% for t in repo.topics[:5] %}{% set meta.parts = meta.parts + ['`#' ~ t ~ '`'] %}{% endfor %}
-{% if meta.parts %}{{ meta.parts | join(' · ') }}
-{% endif %}
-
+{% if (repo.description or short_intros.get(repo.full_name, "")) and ns.bigs | length < 3 %}
+{% set _ = ns.bigs.append(repo) %}
 {% else %}
-<!-- 暂无符合条件的项目 -->
+{% set _ = ns.rests.append(repo) %}
+{% endif %}
 {% endfor %}
+{% if not featured %}
+<!-- 暂无符合条件的项目 -->
+{% endif %}
+{% if ns.bigs %}
+<table>
+{% for repo in ns.bigs %}
+  <tr>
+    <td align="center" valign="top">
+      <h3><a href="{{ repo.html_url }}">{{ lang_emoji(repo.language) }} {{ repo.name }}</a></h3>
+      <p>{{ repo.description or short_intros.get(repo.full_name, "") or "（暂无描述）" }}</p>
+      <p>{{ lang_badge(repo.language) }} {{ stars_badge(repo.full_name) }} {{ forks_badge(repo.full_name) }} {{ push_badge(repo.pushed_at) }}</p>
+{% if repo.topics %}
+      <p>{% for t in repo.topics[:5] %}<code>#{{ t }}</code> {% endfor %}</p>
+{% endif %}
+    </td>
+  </tr>
+{% endfor %}
+</table>
+{% endif %}
+{% if ns.rests %}
+<table>
+{% for row in ns.rests | batch(2) %}
+  <tr>
+{% for repo in row %}
+    <td align="center" valign="top" width="50%">
+      <a href="{{ repo.html_url }}"><b>{{ lang_emoji(repo.language) }} {{ repo.name }}</b></a><br>
+      {{ repo.description or short_intros.get(repo.full_name, "") or "（暂无描述）" }}<br>
+      {{ lang_badge(repo.language) }} {{ stars_badge(repo.full_name) }} {{ push_badge(repo.pushed_at) }}{% if repo.topics %}<br>
+      {% for t in repo.topics[:5] %}<code>#{{ t }}</code> {% endfor %}{% endif %}
+    </td>
+{% endfor %}
+{% if row | length == 1 %}
+    <td align="center" valign="top" width="50%"></td>
+{% endif %}
+  </tr>
+{% endfor %}
+</table>
+{% endif %}
 
 {% if include_update_time %}
 ---

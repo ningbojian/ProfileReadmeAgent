@@ -64,10 +64,13 @@ def test_render_contains_stats_table_and_featured():
     out = render_readme(_ctx(), TEMPLATE)
     assert "| 公开仓库 | 42 |" in out
     assert "| 总 Star | 230 |" in out
-    assert "[cool-tool](https://github.com/alice/cool-tool)" in out
+    # 主打卡（英雄卡）：语言 emoji + 可点击标题
+    assert '<h3><a href="https://github.com/alice/cool-tool">🐍 cool-tool</a></h3>' in out
+    assert '<h3><a href="https://github.com/alice/web-app">📜 web-app</a></h3>' in out
     assert "一个很酷的工具" in out
     assert "网页应用" in out
-    assert "⭐ 120" in out
+    # star 走实时徽章
+    assert "img.shields.io/github/stars/alice/cool-tool" in out
 
 
 def test_render_contains_card_urls():
@@ -123,7 +126,7 @@ def test_render_shows_topic_chips():
     ctx = _ctx()
     ctx.featured[0].topics = ["python", "cli"]
     out = render_readme(ctx, TEMPLATE)
-    assert "`#python`" in out and "`#cli`" in out
+    assert "<code>#python</code>" in out and "<code>#cli</code>" in out
     # 无 topics 的仓库不出现标签行残留
     assert "#javascript" not in out
 
@@ -136,23 +139,72 @@ def test_render_has_no_per_repo_intro_links():
     assert "📄" not in out
 
 
-def test_render_meta_line_is_single_line():
-    """语言 · forks · topics 合并成一行，条目之间有空行分隔。"""
-    ctx = _ctx()
-    ctx.featured[0].topics = ["python", "cli"]
-    out = render_readme(ctx, TEMPLATE)
-    assert "`Python` · 🍴 12 · `#python` · `#cli`" in out
-    assert "`#cli`\n\n### [web-app]" in out  # 下一条目前有空行
+def test_render_card_badges_language_stars_forks_push():
+    """卡片徽章四件套：语言色徽章、star/fork 实时徽章、最后推送日期。"""
+    out = render_readme(_ctx(), TEMPLATE)
+    assert "https://img.shields.io/badge/Python-3776AB?style=flat-square" in out
+    assert "https://img.shields.io/github/stars/alice/cool-tool?" in out
+    assert "https://img.shields.io/github/forks/alice/cool-tool?" in out
+    # shields 静态徽章里字面横线要写成 --
+    assert "last_push-2026--10--01-lightgrey" in out
 
 
-def test_render_meta_line_without_language_has_no_leading_separator():
+def test_render_badge_without_language_omits_lang_badge():
+    """language 为空 → 不出语言徽章，其余徽章照常（无空段、无悬挂分隔符）。"""
     ctx = _ctx()
     ctx.featured[0].language = ""
-    ctx.featured[0].topics = ["python"]
     out = render_readme(ctx, TEMPLATE)
-    section = out.split("[web-app]")[0]  # 只看第一个仓库的段落
-    assert "🍴 12 · `#python`" in section
-    assert "· 🍴" not in section
+    section = out.split("web-app")[0]  # 只看第一个仓库（cool-tool）的卡片
+    assert "badge/Python" not in section
+    assert "github/stars/alice/cool-tool" in section
+    assert "badge/-" not in section  # 不产生空语言的残缺 URL
+
+
+def test_render_push_badge_absent_when_no_push_date():
+    ctx = _ctx()
+    ctx.featured[0].pushed_at = None
+    out = render_readme(ctx, TEMPLATE)
+    assert "last_push" not in out.split("web-app")[0]
+
+
+def test_render_language_badge_escapes_special_chars():
+    """语言名里的 +、空格等字符要 URL 转义，颜色按内置映射表上色。"""
+    ctx = _ctx()
+    ctx.featured[0].language = "C++"
+    out = render_readme(ctx, TEMPLATE)
+    assert "badge/C%2B%2B-00599C" in out
+
+
+def test_render_hero_cards_take_top3_with_description_and_rest_grid():
+    """布局分层：前 3 个「有文案」的仓库 → 通栏主打卡；其余 → 双列网格卡（奇数补位空格）。"""
+    ctx = _ctx()
+
+    def _repo(n: str, desc: str) -> Repo:
+        return Repo(
+            name=n,
+            full_name=f"alice/{n}",
+            description=desc,
+            language="Python",
+            stars=1,
+            html_url=f"https://github.com/alice/{n}",
+        )
+
+    ctx.featured = [
+        _repo("d1", "有描述一"),
+        _repo("x", ""),
+        _repo("d2", "有描述二"),
+        _repo("d3", "有描述三"),
+    ]
+    ctx.short_intros = {}
+    out = render_readme(ctx, TEMPLATE)
+    # 主打卡恰好 3 个（有描述的前三个，保持原排序）
+    assert out.count("<h3>") == 3
+    for n in ("d1", "d2", "d3"):
+        assert f'<h3><a href="https://github.com/alice/{n}">' in out
+    # 无描述的 x 落到网格：加粗小标题，且奇数行出补位空格（共 x 一格 + 空格一格）
+    assert '<a href="https://github.com/alice/x"><b>🐍 x</b></a>' in out
+    assert "<h3><a href=\"https://github.com/alice/x\">" not in out
+    assert out.count('width="50%"') == 2
 
 
 def test_render_empty_description_falls_back_to_short_intro():
@@ -162,7 +214,7 @@ def test_render_empty_description_falls_back_to_short_intro():
     ctx.short_intros = {"alice/cool-tool": "命令行密码生成器，支持自定义字符集。"}
     out = render_readme(ctx, TEMPLATE)
     assert "命令行密码生成器" in out
-    assert "（暂无描述）" not in out.split("[web-app]")[0]
+    assert "（暂无描述）" not in out  # 两个仓库都有文案，任何位置都不该出占位符
 
 
 def test_render_without_short_intro_shows_placeholder():
