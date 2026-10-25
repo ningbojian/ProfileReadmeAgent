@@ -450,3 +450,13 @@ def test_embed_body_uses_language_specific_title():
     assert embed_body("en", "I build things.") == "## 🤖 AI Bio\n\nI build things."
     body = embed_body("zh", "我是一名开发者。")
     assert "统计" not in body and "置顶" not in body
+
+
+def test_header_links_upstream_guide_not_local_copy():
+    """调用模式下用户仓库没有 docs/：生成页头的说明必须指向上游指南。
+
+    可复用 workflow 只检出工具代码；用户仓库可能只有 config.yaml + README，
+    写成 `docs/guide.md` 在那边是死链。
+    """
+    out = render_readme(_ctx(), TEMPLATE)
+    assert "https://github.com/ningbojian/ProfileReadmeAgent/blob/main/docs/guide.md" in out
