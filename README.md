@@ -27,17 +27,6 @@
 > [!NOTE]
 > 不配任何 Secret 也能跑：没有 AI key 时简介降级为占位注释，配好后自动补上。手写 README 默认走 `readme.mode: auto`，只在第一个标题后插入/更新一个 AI 简介块，**你的排版、图片、徽章一个字节都不动**；想整页交给工具排版，把 `readme.mode` 改成 `full`（会先开预览 PR，需要 `WORKFLOW_PAT`）。
 
-## 可选 Secret
-
-| 用途 | Secret | 说明 |
-| --- | --- | --- |
-| AI 简介 / 仓库 README / 描述 | `ANTHROPIC_API_KEY` | Claude 官方 key |
-| 其他 AI 服务商 | `AI_API_KEY` | DeepSeek / 千问 / Kimi / MiMo / Ollama 等；在 `config.yaml` 里改 `provider` |
-| 推分支、开 PR、改 workflow | `WORKFLOW_PAT` | classic PAT，勾 `repo` + `workflow`；不配则「各仓库 README 自动更新 / `readme.mode: full` 预览 / 描述写回 / 改定时周期」跳过，其余功能不受影响 |
-
-> [!WARNING]
-> `WORKFLOW_PAT` 请用 **classic** 令牌。fine-grained 令牌若选了 "Only select repositories"，对未勾选的公开仓库也会返回 404。
-
 ## 安装与更新
 
 两条路，效果一样，建好后都自动收工具更新：
@@ -57,6 +46,17 @@ uses: ningbojian/ProfileReadmeAgent/.github/workflows/reusable-update-profile.ym
 - `@v1.0.0`：固定版本，永远不变；`@main`：最新开发版。
 
 破坏性变更会发 `v2`，`v1` 继续可用——你不改就一直能跑。旧模板副本（仓库里还留着 `src/` 的那种）按[使用指南](docs/guide.md)里的迁移步骤换掉 workflow 即可，其余文件可留可删。
+
+## 可选 Secret
+
+| 用途 | Secret | 说明 |
+| --- | --- | --- |
+| AI 简介 / 仓库 README / 描述 | `ANTHROPIC_API_KEY` | Claude 官方 key |
+| 其他 AI 服务商 | `AI_API_KEY` | DeepSeek / 千问 / Kimi / MiMo / Ollama 等；在 `config.yaml` 里改 `provider` |
+| 推分支、开 PR、改 workflow | `WORKFLOW_PAT` | classic PAT，勾 `repo` + `workflow`；不配则「各仓库 README 自动更新 / `readme.mode: full` 预览 / 描述写回 / 改定时周期」跳过，其余功能不受影响 |
+
+> [!WARNING]
+> `WORKFLOW_PAT` 请用 **classic** 令牌。fine-grained 令牌若选了 "Only select repositories"，对未勾选的公开仓库也会返回 404。
 
 ## 完整文档
 
