@@ -209,6 +209,21 @@ def test_wf_bot_commit_keeps_skip_ci():
     assert 'git commit -m "chore: 自动更新 Profile README [skip ci]"' in text
 
 
+def test_wf_warns_when_repo_name_is_not_username():
+    """仓库名不是 用户名/用户名 时给出可执行警告：否则主页生成了却不显示。
+
+    从模板建库最常见的失误是沿用默认仓库名；GitHub 只展示 用户名/用户名 仓库的
+    README。比较用小写展开，避免用户名大小写差异导致误报。
+    """
+    text = WF.read_text(encoding="utf-8")
+    step = _step(text, "检查仓库名（须为 用户名/用户名）")
+    assert "${GITHUB_REPOSITORY,,}" in step
+    assert "${GITHUB_REPOSITORY_OWNER,,}" in step
+    assert "::warning::" in step
+    assert "Settings → General" in step
+    assert "不会显示" in step
+
+
 def test_wf_has_no_projects_or_named_repo_traces():
     """反向锁（A-P0）：yml 全文不得再出现项目介绍/点名仓库链路的任何痕迹。"""
     text = WF.read_text(encoding="utf-8")

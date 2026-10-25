@@ -4,8 +4,12 @@
 
 自动维护 GitHub 个人主页 README：仓库统计、置顶项目、全部仓库列表、AI 简介，中英双语，定时增量更新。
 
+> 效果示例：[ningbojian 的主页](https://github.com/ningbojian)——由本工具生成并自动维护。
+
 > [!TIP]
 > 用法只有一步：点 **Use this template → Create a new repository**，新仓库命名为 `你的用户名/你的用户名`（保持 **Public**），然后在 Actions 跑一次 **Update Profile README**。首次运行会直接用生成的主页替换本说明页，不会弹 PR。
+
+已经有 `你的用户名/你的用户名` 仓库？**先别删**：在它的 Settings → Rename 改成临时名字（如 `profile-backup`，历史与原 README 都保留），再从模板创建同名新仓库，把旧 README 全文粘贴进去再跑第一次——内容会原样进入可编辑区，并先开预览 PR 让你确认。
 
 ## 它能做什么
 
@@ -44,3 +48,5 @@ pytest
 ```
 
 本地运行前把 `config.yaml` 的 `github.username` 填成你的用户名；Actions 里留空即可（自动取仓库所有者）。
+
+许可证：[MIT](LICENSE)。

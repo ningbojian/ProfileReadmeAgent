@@ -50,6 +50,20 @@ def test_config_is_template_safe():
     assert cfg.repo_descriptions.enabled is False
 
 
+def test_license_is_mit():
+    """模板仓库可被他人复制使用：必须有明确的许可证。"""
+    text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert text.startswith("MIT License")
+    assert "Copyright (c) 2026 ningbojian" in text
+
+
+def test_readme_tells_existing_profile_repo_users_to_rename_first():
+    """已有 用户名/用户名 仓库的用户无法直接建同名新库：README 必须先教改名备份。"""
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "profile-backup" in text
+    assert "Settings → Rename" in text
+
+
 def test_removed_features_are_gone():
     """项目介绍等已下线功能不得残留在模板里。"""
     assert not (ROOT / "src" / "profile_agent" / "projects.py").exists()

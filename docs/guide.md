@@ -24,6 +24,8 @@
 3. **配 PR / 写权限令牌（要用「各仓库 README 自动更新」「首次接管预览」「仓库描述写回」必配，2 分钟）**：生成一个 classic PAT（勾 `repo` + `workflow` 两项），存成 secret `WORKFLOW_PAT`——没有它模式 B 无法推送分支/开 PR，首次接管的预览 PR 也开不出来（会明确警告并直接写 main），仓库描述写回同样跳过；其余功能不受影响。详细步骤与常见坑见下文「配置 WORKFLOW_PAT」。
 4. **手动跑一次**：Actions 页面 → Update Profile README → Run workflow。完成后 **overview 更新**直接出现在 README。
 
+> **已经有 `你的用户名/你的用户名` 仓库？** 不要删。先在它的 Settings → Rename 改成临时名字（如 `profile-backup`——提交历史与原 README 都完整保留），再从模板创建新的同名仓库；把旧 README 全文粘贴进新仓库的 `README.md`，然后跑第一次——旧内容会逐字进入可编辑区，并先开预览 PR 让你确认（见「首次接管」）。确认无误后旧仓库留着当备份或删掉都行。
+
 之后默认每 3 天定时自动更新（北京时间约 10:23 唤醒检查），也可随时手动触发。所有可选项都在 `config.yaml` 里，网页上点 Edit 就能改。
 
 ## 本地运行
