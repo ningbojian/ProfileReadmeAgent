@@ -61,6 +61,10 @@ class ReadmeConfig:
     include_update_time: bool = True
     visitors_badge: bool = False  # 主页嵌入第三方「主页访问量」计数徽章（komarev.com）
     bilingual: bool = True  # true = 同时生成 README.en.md 英文版，顶部互链切换
+    # 手写 README 的保护策略（2026-10-25）：
+    #   auto = 只在首个标题后插/更新一个 AI 简介托管块，其余字节不动；
+    #   full = 整页接管（有 PAT 先开预览 PR，无 PAT 跳过）。
+    mode: str = "auto"
     sections: Sections = field(default_factory=Sections)  # 四个板块开关，默认全开
 
 
@@ -230,6 +234,11 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
                     f"readme.sections.{key} 必须是 true 或 false（收到：{value!r}）"
                 )
             setattr(sections, key, value)
+    mode = str(readme.get("mode") or "auto")
+    if mode not in ("auto", "full"):
+        raise ConfigError(
+            f'readme.mode 只支持 "auto"（手写页只插简介块）/ "full"（整页接管），收到：{mode}'
+        )
     cfg.readme = ReadmeConfig(
         enabled=bool(readme.get("enabled", True)),
         path=str(readme.get("path") or "README.md"),
@@ -241,6 +250,7 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         include_update_time=bool(readme.get("include_update_time", True)),
         visitors_badge=bool(readme.get("visitors_badge", False)),
         bilingual=bool(readme.get("bilingual", True)),
+        mode=mode,
         sections=sections,
     )
 

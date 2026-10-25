@@ -1,15 +1,24 @@
-"""workflow YAML 结构回归：定时间隔下拉、RESERVED 防撞名、间隔门标记（guide「控制开销」配套）。"""
+"""workflow YAML 结构回归：定时间隔下拉、RESERVED 防撞名、间隔门标记（guide「控制开销」配套）。
+
+可复用 workflow 拆分（2026-10-25）后：
+- 触发器、手动控件在「调用文件」update-profile.yml（用户从模板拿到的那份）；
+- 定时门、改写、提交等全部执行逻辑在 reusable-update-profile.yml。
+测试按各自归属读取文件。
+"""
 
 from pathlib import Path
 
 import yaml
 
-WF = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "update-profile.yml"
+ROOT = Path(__file__).resolve().parents[1]
+WF_DIR = ROOT / ".github" / "workflows"
+CALLER = WF_DIR / "update-profile.yml"
+LOGIC = WF_DIR / "reusable-update-profile.yml"
 
 
 def _wf() -> dict:
     # PyYAML 按 YAML 1.1 解析：裸 `on:` 的键是布尔 True 而不是字符串 "on"
-    raw = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    raw = yaml.safe_load(CALLER.read_text(encoding="utf-8"))
     return raw.get("on") or raw.get(True)
 
 
@@ -28,25 +37,33 @@ def test_wf_schedule_interval_input_is_choice_with_sparse_options():
 
 
 def test_wf_daily_cron_with_interval_markers():
-    """cron 每天唤醒；实际是否运行由 interval_days/interval_anchor 标记门决定。"""
+    """cron 每天唤醒；实际是否运行由 interval_days/interval_anchor 标记门决定。
+
+    标记写在调用文件里（可复用 workflow 改不动用户的触发器），所以两处都必须
+    出现在 caller 文本中。
+    """
     assert _wf()["schedule"][0]["cron"] == "23 2 * * *"
-    text = WF.read_text(encoding="utf-8")
+    text = CALLER.read_text(encoding="utf-8")
     assert "# interval_days:" in text
     assert "# interval_anchor:" in text
 
 
 def test_wf_check_step_gates_on_interval_markers():
     """定时第一步（check）读标记做间隔门：未到日子输出 schedule=false 并写明原因。"""
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     assert "interval_days" in text
     assert "interval_anchor" in text
     assert "非每" in text  # 跳过时的可读原因行
 
 
 def test_wf_rewrite_step_only_on_dispatch_and_skips_default():
-    """改写步骤仅手动触发执行；默认选项「不修改」时原样退出不改文件。"""
-    text = WF.read_text(encoding="utf-8")
-    assert 'if: github.event_name == \'workflow_dispatch\'' in text
+    """改写步骤仅手动触发执行；默认选项「不修改」时原样退出不改文件。
+
+    拆分后事件来自 inputs.trigger_event（caller 转发）——called workflow 里的
+    github.event_name 可能恒为 workflow_call，不能再拿它判断。
+    """
+    text = LOGIC.read_text(encoding="utf-8")
+    assert "if: inputs.trigger_event == 'workflow_dispatch'" in text
     assert "不修改" in text
 
 
@@ -65,8 +82,8 @@ def test_wf_dialog_hides_projects_inputs():
         "wait_for_merges",
         "schedule_interval",
     }
-    text = WF.read_text(encoding="utf-8")
-    assert "REPO_CHECKBOXES_START" not in text  # 勾选框区块标记（移除后同步步骤自我跳过）
+    for path in (CALLER, LOGIC):
+        assert "REPO_CHECKBOXES_START" not in path.read_text(encoding="utf-8")
 
 
 def test_wf_rerun_choice_options_and_flag_mapping():
@@ -74,8 +91,8 @@ def test_wf_rerun_choice_options_and_flag_mapping():
 
     有意变更（2026-10-24 交互治理）：force / repo_readmes 两个重叠勾选合并为
     rerun 下拉——force 原已包含 repo_readmes 的全量重跑，两个勾选并存让用户
-    无法判断该点哪个。shell 按选项名精确 case，测试锁选项列表与三条映射分支，
-    文案改字忘改映射会立即红。
+    无法判断该点哪个。shell 按选项名精确 case（现位于 reusable），测试锁选项
+    列表与三条映射分支，文案改字忘改映射会立即红。
     """
     inputs = _wf()["workflow_dispatch"]["inputs"]
     spec = inputs["rerun"]
@@ -87,7 +104,7 @@ def test_wf_rerun_choice_options_and_flag_mapping():
         "两者都强制（主页重写 + 仓库 README 全量重跑）",
     ]
     assert spec["default"] == spec["options"][0]
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     assert '"强制重写主页") FLAGS="$FLAGS --force"' in text
     assert 'FLAGS="$FLAGS --repo-readmes"' in text
     assert 'FLAGS="$FLAGS --force --repo-readmes"' in text
@@ -132,12 +149,13 @@ def test_wf_dialog_descriptions_single_line_short_and_plain():
 def test_wf_push_trigger_targets_main_readme_paths():
     """WP8：README/README.en.md 保存到 main 即触发（用户选定「保存即触发」）。
 
-    paths 只圈两个 README 文件——其余 push 不触发；
-    防循环三重保险之一（bot 提交 [skip ci] + paths 过滤 + branches:[main]）。
+    paths 只圈两个 README + config.yaml（改了用户名/开关也值得立刻重跑）——
+    其余 push 不触发；防循环三重保险之一（bot 提交 [skip ci] + paths 过滤 +
+    branches:[main]）。
     """
     push = _wf()["push"]  # PyYAML 解析为 dict（branches/paths 两个键，非 list 形态）
     assert push["branches"] == ["main"]
-    assert push["paths"] == ["README.md", "README.en.md"]
+    assert push["paths"] == ["README.md", "README.en.md", "config.yaml"]
 
 
 def test_wf_steps_bypass_interval_gate_for_non_schedule():
@@ -147,12 +165,12 @@ def test_wf_steps_bypass_interval_gate_for_non_schedule():
     仅 check 步（schedule 专属）与间隔改写步（dispatch 专属）是事件专属条件。
     不存在任何把 push 挡在门外的其他 if 形态。
     """
-    raw = yaml.safe_load(WF.read_text(encoding="utf-8"))  # _wf() 只返回 on 段，jobs 在根文档
+    raw = yaml.safe_load(LOGIC.read_text(encoding="utf-8"))
     steps = raw["jobs"]["update"]["steps"]
     allowed = {
-        "github.event_name == 'schedule'",
-        "github.event_name == 'workflow_dispatch'",
-        "github.event_name != 'schedule' || steps.check.outputs.schedule == 'true'",
+        "inputs.trigger_event == 'schedule'",
+        "inputs.trigger_event == 'workflow_dispatch'",
+        "inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'",
     }
     conds = [s["if"] for s in steps if s.get("if")]
     assert conds, "工作步骤不得全部无条件（定时门必须存在于 check/工作步）"
@@ -169,7 +187,7 @@ def _step(text: str, name: str) -> str:
 
 def test_wf_git_add_includes_readme_en():
     """WP8：提交步 git add 带上 README.en.md（路径步输出 readme_en，与 cli 派生同口径）。"""
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     assert 'print(f"readme_en=' in text  # 读取配置路径步输出 en 路径
     commit = _step(text, "提交变更")
     assert "steps.paths.outputs.readme }}" in commit
@@ -177,24 +195,28 @@ def test_wf_git_add_includes_readme_en():
 
 
 def test_wf_git_add_skips_missing_files_and_commits_interval_change():
-    """提交步只 add 真实存在的文件；定时间隔改写会 stage workflow（需 PAT）。
+    """提交步只 add 真实存在的文件；定时间隔改写会 stage 调用文件（需 PAT）。
 
     真实故障（2026-10-25 复核）：用户先设 bilingual:false / readme.enabled:false 时
     README.en.md / snapshot 不存在，`set -e` 下 `git add` 返回 128，整个 job 失败；
     另一头，间隔下拉改写的 workflow 文件从未 staged，改动被丢弃、guide 承诺落空。
+
+    拆分后调用文件可能被改名，路径来自「定位调用方的 workflow 文件」步的输出，
+    不能再写死 update-profile.yml。
     """
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     commit = _step(text, "提交变更")
     assert 'if [ -e "$p" ]' in commit
     for output in ("readme", "readme_en", "snapshot"):
         assert f"steps.paths.outputs.{output} }}" in commit
-    assert "git add .github/workflows/update-profile.yml" in commit
+    assert 'git add "$WF"' in commit
+    assert "steps.wf.outputs.path }}" in commit
     assert "定时间隔改动未保存" in commit
 
 
 def test_wf_interval_rewrite_requires_pat():
     """间隔改写需要 WORKFLOW_PAT；没有就明确提示并保持原周期，不留无效改动。"""
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     step = _step(text, "调整定时运行间隔（schedule_interval）")
     assert "WORKFLOW_PAT" in step
     assert "本轮保持原周期" in step
@@ -205,7 +227,7 @@ def test_wf_bot_commit_keeps_skip_ci():
 
     有意变更（A-P0）：项目介绍 PR 提交随审核流移除，工作流只剩直提 main 一个提交。
     """
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     assert 'git commit -m "chore: 自动更新 Profile README [skip ci]"' in text
 
 
@@ -215,7 +237,7 @@ def test_wf_warns_when_repo_name_is_not_username():
     从模板建库最常见的失误是沿用默认仓库名；GitHub 只展示 用户名/用户名 仓库的
     README。比较用小写展开，避免用户名大小写差异导致误报。
     """
-    text = WF.read_text(encoding="utf-8")
+    text = LOGIC.read_text(encoding="utf-8")
     step = _step(text, "检查仓库名（须为 用户名/用户名）")
     assert "${GITHUB_REPOSITORY,,}" in step
     assert "${GITHUB_REPOSITORY_OWNER,,}" in step
@@ -225,7 +247,8 @@ def test_wf_warns_when_repo_name_is_not_username():
 
 
 def test_wf_has_no_projects_or_named_repo_traces():
-    """反向锁（A-P0）：yml 全文不得再出现项目介绍/点名仓库链路的任何痕迹。"""
-    text = WF.read_text(encoding="utf-8")
-    for token in ("docs/projects", "--repos", "repo_inputs", "项目介绍", "steps.resolve"):
-        assert token not in text, f"workflow 残留项目介绍痕迹：{token}"
+    """反向锁（A-P0）：两份 yml 全文不得再出现项目介绍/点名仓库链路的任何痕迹。"""
+    for path in (CALLER, LOGIC):
+        text = path.read_text(encoding="utf-8")
+        for token in ("docs/projects", "--repos", "repo_inputs", "项目介绍", "steps.resolve"):
+            assert token not in text, f"{path.name} 残留项目介绍痕迹：{token}"

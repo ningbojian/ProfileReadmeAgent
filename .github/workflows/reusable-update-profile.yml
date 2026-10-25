@@ -1,0 +1,273 @@
+name: Update Profile README (reusable)
+
+# 可复用 workflow：用户的仓库只保留一个「调用文件」，触发器、输入、安装与执行都在这里。
+# 用户在调用文件里写：
+#   uses: ningbojian/ProfileReadmeAgent/.github/workflows/reusable-update-profile.yml@v1
+# 代码版本由 job.workflow_sha 锁定：用户 pin @v1，这里检出的就是 v1 对应的提交。
+# 详细安装与升级说明见 docs/guide.md；发版流程见 docs/releasing.md。
+on:
+  workflow_call:
+    inputs:
+      # 两个布尔控件故意用 string：定时/push 事件里调用方转发的是空串；
+      # boolean 类型可能把空串吞成 false，导致定时轮误加 --skip-readme。
+      trigger_event:
+        description: "调用方的触发事件（schedule / push / workflow_dispatch），由调用文件转发"
+        type: string
+        default: "workflow_dispatch"
+      rerun:
+        description: "强制重跑范围（四选一）；空串 = 只更新有变化的内容"
+        type: string
+        default: "不强制（按变化更新）"
+      update_readme:
+        description: "true / false / 空串（空串按 true 处理）"
+        type: string
+        default: "true"
+      wait_for_merges:
+        description: "true = 开 PR 后等待合并（最多 30 分钟）"
+        type: string
+        default: "false"
+      schedule_interval:
+        description: "定时周期选项；只在 workflow_dispatch 时生效"
+        type: string
+        default: "不修改（保持当前周期）"
+    secrets:
+      WORKFLOW_PAT:
+        description: "模式 B 的 compare/git-data 推送/PR/轮询，以及保存定时周期改动"
+        required: false
+      ANTHROPIC_API_KEY:
+        description: "Claude 官方 key（ai.provider=anthropic）"
+        required: false
+      AI_API_KEY:
+        description: "OpenAI 兼容接口 key（ai.provider=openai）"
+        required: false
+      DEEPSEEK_API_KEY:
+        description: "DeepSeek 等服务的 key（按 config.yaml 的 key_env 使用）"
+        required: false
+
+permissions:
+  contents: write
+  # 有意变更（A-P0）：pull-requests 权限随方向二 PR 审核流一并移除（gh pr 命令已删）
+  issues: write # 模式 B 清单 issue 用内置 GITHUB_TOKEN 开/改/关（§5.7）
+
+jobs:
+  update:
+    # 模板仓库自身永不运行：它的 README 是给用户看的说明页，不是个人主页
+    if: github.repository != 'ningbojian/ProfileReadmeAgent'
+    runs-on: ubuntu-latest
+    steps:
+      # 先检出调用方仓库（配置、README、快照都来自这里）
+      - uses: actions/checkout@v5
+
+      # 再检出工具仓库：版本严格跟随调用方 pin 的 @v1（job.workflow_sha）。
+      # 用户仓库因此不需要保留 src/，工具更新随标签自动生效。
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .profile-agent
+
+      # 仓库名必须是 用户名/用户名，GitHub 才会把 README 显示在个人主页
+      - name: 检查仓库名（须为 用户名/用户名）
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          if [ "$repo" != "$owner/$owner" ]; then
+            echo "::warning::当前仓库是 ${GITHUB_REPOSITORY}，不是 ${GITHUB_REPOSITORY_OWNER}/${GITHUB_REPOSITORY_OWNER}：生成的主页不会显示在你的 GitHub 个人主页。请到 Settings → General 把仓库改名为 ${GITHUB_REPOSITORY_OWNER}/${GITHUB_REPOSITORY_OWNER}。"
+          fi
+
+      # 调用文件允许改名：靠 interval_days 标记找到它，定时间隔门/改周期/提交都用这个路径
+      - name: 定位调用方的 workflow 文件
+        id: wf
+        run: |
+          WF=$(grep -rl '# interval_days:' .github/workflows/*.yml 2>/dev/null | head -1 || true)
+          WF=${WF:-.github/workflows/update-profile.yml}
+          echo "path=$WF" >> "$GITHUB_OUTPUT"
+          echo "调用文件：$WF"
+
+      # 不装任何依赖，纯 grep 判断定时开关 + 定时间隔门
+      - name: 检查定时开关与运行间隔（schedule.enabled / interval_days）
+        if: inputs.trigger_event == 'schedule'
+        id: check
+        run: |
+          if grep -A3 '^schedule:' config.yaml | grep -qE 'enabled:[[:space:]]*false'; then
+            echo "schedule=false" >> "$GITHUB_OUTPUT"
+            echo "定时更新已关闭（config.yaml 中 schedule.enabled=false），本次跳过"
+            exit 0
+          fi
+          echo "schedule=true" >> "$GITHUB_OUTPUT"
+          # 间隔门：cron 每天唤醒，实际是否运行由 interval_days × interval_anchor 决定
+          # （两个标记由 Run workflow 的「定时运行间隔」下拉自动改写；删掉两行标记 = 恢复纯 cron）
+          WF='${{ steps.wf.outputs.path }}'
+          DAYS=$(grep -oE '# interval_days: *[0-9]+' "$WF" | grep -oE '[0-9]+' | head -1)
+          ANCHOR=$(grep -oE '# interval_anchor: *[0-9]{4}-[0-9]{2}-[0-9]{2}' "$WF" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          if [ -n "$DAYS" ] && [ -n "$ANCHOR" ] && [ "$DAYS" -gt 0 ]; then
+            DIFF=$(( ( $(date -u +%s) - $(date -u -d "$ANCHOR" +%s) ) / 86400 ))
+            if [ $(( DIFF % DAYS )) -ne 0 ]; then
+              echo "schedule=false" >> "$GITHUB_OUTPUT"
+              echo "距锚点 ${ANCHOR} 已 ${DIFF} 天，非每 ${DAYS} 天的运行日，本次跳过（Run workflow 下拉可改间隔）"
+            fi
+          fi
+
+      - uses: actions/setup-python@v6
+        if: inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .profile-agent/pyproject.toml
+
+      - name: 安装依赖（工具仓库检出版本）
+        if: inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'
+        run: pip install -e ./.profile-agent
+
+      - name: 读取配置路径
+        if: inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'
+        id: paths
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          c = yaml.safe_load(open('config.yaml', encoding='utf-8')) or {}
+          rp = (c.get('readme') or {}).get('path', 'README.md')
+          print(f"readme={rp}")
+          # 双语第二文件与 cli 同口径派生：README.md → README.en.md（WP8）
+          print(f"readme_en={rp[:-3] + '.en.md' if rp.endswith('.md') else rp + '.en.md'}")
+          print(f"snapshot={(c.get('snapshot') or {}).get('path', 'data/snapshot.json')}")
+          PY
+
+      - name: 生成 README
+        if: inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }} # 模式 B：compare/git-data 推送/PR/轮询（§5.7）
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          PROFILE_AGENT_HOME: ${{ github.workspace }}/.profile-agent
+        run: |
+          # concurrency 组串行：多轮触发会显示 Queued——排队等待上一轮完成，已开的 PR 不受影响
+          echo "提示：定时/手动多轮触发会排队串行执行（显示 Queued），排队期间已开的 PR 不受影响"
+          FLAGS=""
+          # 强制重跑范围：单选下拉四选一 → 一一对应 CLI 旗标（互斥，无重叠）
+          case "${{ inputs.rerun }}" in
+            "强制重写主页") FLAGS="$FLAGS --force" ;;
+            "强制重跑各仓库 README（主页仍按变化更新）") FLAGS="$FLAGS --repo-readmes" ;;
+            "两者都强制（主页重写 + 仓库 README 全量重跑）") FLAGS="$FLAGS --force --repo-readmes" ;;
+          esac
+          [ "${{ inputs.update_readme }}" = "false" ] && FLAGS="$FLAGS --skip-readme"
+          # 等待仅勾选时执行（30 分钟窗口）；不勾与 cron 一样 0 分钟——直接继续
+          [ "${{ inputs.wait_for_merges }}" = "true" ] && FLAGS="$FLAGS --wait-for-merges"
+          python -m profile_agent --config config.yaml $FLAGS
+
+      # 「定时运行间隔」下拉：选了天数就改写调用文件里的间隔标记（提交由下一步统一完成）
+      - name: 调整定时运行间隔（schedule_interval）
+        if: inputs.trigger_event == 'workflow_dispatch'
+        env:
+          INTERVAL: ${{ inputs.schedule_interval }}
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+          WF: ${{ steps.wf.outputs.path }}
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import os
+          import pathlib
+          import re
+
+          choice = os.environ.get("INTERVAL") or ""
+          if choice.startswith("不修改"):
+              print("未选择调整周期，保持当前定时不变")
+              raise SystemExit(0)
+          if not os.environ.get("WORKFLOW_PAT"):
+              print("::warning::定时间隔调整需要 WORKFLOW_PAT（修改 workflow 文件）；本轮保持原周期")
+              raise SystemExit(0)
+          m = re.fullmatch(r"每 (\d+) 天", choice)
+          if not m:
+              raise SystemExit(f"未知的间隔选项：{choice!r}")
+          n = int(m.group(1))
+          p = pathlib.Path(os.environ["WF"])
+          text = p.read_text(encoding="utf-8")
+          today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+          text = re.sub(r"# interval_days: *\d+", f"# interval_days: {n}", text, count=1)
+          text = re.sub(
+              r"# interval_anchor: *\d{4}-\d{2}-\d{2}",
+              f"# interval_anchor: {today}",
+              text,
+              count=1,
+          )
+          p.write_text(text, encoding="utf-8")
+          print(f"定时已改为每 {n} 天一次（锚点 {today} UTC 起算，每 N 天的对应日期运行）")
+          PY
+
+      # 有意变更（A-P0）：方向二已移除——PR 审核流与点名仓库链路一并下线，纯直提 main
+      - name: 提交变更
+        if: inputs.trigger_event != 'schedule' || steps.check.outputs.schedule == 'true'
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+          WF: ${{ steps.wf.outputs.path }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 文件可能不存在（如 readme.bilingual=false 或首次运行前关闭 readme），逐个判断再 add
+          for p in "${{ steps.paths.outputs.readme }}" "${{ steps.paths.outputs.readme_en }}" "${{ steps.paths.outputs.snapshot }}"; do
+            if [ -e "$p" ]; then
+              git add "$p"
+            fi
+          done
+
+          # 定时间隔下拉会改写调用文件；只有 staged 的文件才进提交。
+          # 内置 GITHUB_TOKEN 无权推 workflow 变更——只在配了 WORKFLOW_PAT 时 stage。
+          if ! git diff --quiet -- "$WF"; then
+            if [ -n "$WORKFLOW_PAT" ]; then
+              git add "$WF"
+            else
+              echo "::warning::定时间隔改动未保存：修改 workflow 文件需要 WORKFLOW_PAT（classic，勾选 repo 与 workflow）"
+            fi
+          fi
+
+          has_direct=false
+          if ! git diff --cached --quiet; then
+            has_direct=true
+          fi
+          if [ "$has_direct" = "false" ]; then
+            echo "无变更，跳过提交"
+            exit 0
+          fi
+
+          # 有 WORKFLOW_PAT 时用它推送（内置 token 无权改 workflow 文件）。
+          # 认证头经 git config 传递，不进 remote URL，避免 token 泄漏进日志。
+          # 必须「覆盖」checkout 预设的同名认证头，不能用 -c 追加：
+          # git 会把两层配置都当 Authorization header 发出去，GitHub 报
+          # Duplicate header 400（实测踩过）。
+          if [ -n "$WORKFLOW_PAT" ]; then
+            AUTH=$(printf 'x-access-token:%s' "$WORKFLOW_PAT" | base64 | tr -d '\n')
+            git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
+          fi
+          git_push() {
+            git push "$@"
+          }
+          git_pull_rebase() {
+            git pull --rebase --autostash origin main
+          }
+
+          # ---- 直接提交 main：README/统计 ----
+          git commit -m "chore: 自动更新 Profile README [skip ci]"
+          pushed=false
+          for i in 1 2 3; do
+            if err=$(git_push 2>&1); then
+              pushed=true
+              break
+            fi
+            echo "$err"
+            # 权限/认证类失败重试也没用，直接给出修法
+            if echo "$err" | grep -qE 'workflows` permission|Authentication failed|invalid username or password|Support for password authentication'; then
+              echo "::error::push 因权限/认证被拒：修改 workflow 文件需要配置 WORKFLOW_PAT secret（classic PAT 需勾选 repo 与 workflow 两项权限，见 docs/guide.md）；若已配置请检查是否过期"
+              exit 1
+            fi
+            echo "push 被拒绝（main 有新提交），第 $i 次 rebase 重试..."
+            git_pull_rebase
+            sleep 5
+          done
+          if [ "$pushed" != "true" ]; then
+            echo "::error::push 失败（可能与 main 上的手工修改冲突），请打开本次运行日志检查，或手动合并后重新运行工作流"
+            exit 1
+          fi

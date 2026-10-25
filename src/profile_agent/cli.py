@@ -35,7 +35,8 @@ from .desc_translate import contains_cjk, translate_descriptions
 from .github_client import API, GitHubClient, GitHubError
 from .models import Snapshot, TemplateContext
 from .preserve import extract_custom, merge_readme_3way
-from .render import render_readme, write_if_changed
+from .readme_block import block_body, markers_balanced, strip_block, upsert_block
+from .render import embed_body, render_readme, write_if_changed
 from .repo_descriptions import (
     apply_updates,
     generate_descriptions,
@@ -169,16 +170,22 @@ def _short_intros_clean(targets, cfg: Config, prev: Snapshot | None, readme_of) 
     return True
 
 
-def _report_custom_mode(mode: str, where: str) -> None:
+def _report_custom_mode(mode: str, where: str, *, embed: bool = False) -> None:
     """WP5 custom 区状态提示（take_over/broken 才出声，正常路径零扰民）。"""
     if mode == "take_over":
-        print(
-            f"{where}：检测到手写 README（无 profile-agent 标记），原文已整体保留到 custom 区",
-            file=sys.stderr,
-        )
+        if embed:
+            print(
+                f"{where}：检测到手写 README，auto 模式只插入/更新 AI 简介块，其余内容不动",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"{where}：检测到手写 README（无 profile-agent 标记），原文已整体保留到 custom 区",
+                file=sys.stderr,
+            )
     elif mode == "broken":
         print(
-            f"警告：{where} 的 custom 标记不配对（start/end 须各恰好一次），本次按空处理",
+            f"警告：{where} 的 custom 标记不配对（start/end 须各恰好一次），本次不改动该文件",
             file=sys.stderr,
         )
 
@@ -237,6 +244,31 @@ def _b_repo_progress(r) -> str:
     }.get(r.status, "缺 key 积压")
 
 
+_DEFAULT_TEMPLATE = "templates/profile.md.j2"
+
+
+def _resolve_template(root: Path, configured: str) -> Path:
+    """默认模板跟随上游工具目录；自定义路径永远以本地配置为准。
+
+    可复用 workflow 调用时，用户仓库没有 templates/：workflow 会把工具检出到
+    PROFILE_AGENT_HOME 并注入同名环境变量。默认路径优先上游（模板副本也能收到
+    模板更新）；readme.template 指向别的文件时保持配置优先。
+    """
+    tool_home = os.environ.get("PROFILE_AGENT_HOME") or ""
+    if tool_home and configured == _DEFAULT_TEMPLATE:
+        upstream = Path(tool_home) / configured
+        if upstream.is_file():
+            return upstream
+    local = root / configured
+    if local.exists():
+        return local
+    # 本地没有：再试环境变量，最后试 editable 安装的仓库根（本地 CLI 兜底）
+    for base in (tool_home, str(Path(__file__).resolve().parents[2])):
+        if base and (Path(base) / configured).is_file():
+            return Path(base) / configured
+    return local
+
+
 def run(
     cfg_path: Path,
     *,
@@ -266,7 +298,7 @@ def run(
     readme_path = root / cfg.readme.path
     # 双语第二文件（2026-10-23 WP3）：README.md → 同目录 README.en.md，零配置派生
     en_readme_path = readme_path.with_name(readme_path.stem + ".en.md")
-    template_path = root / cfg.readme.template
+    template_path = _resolve_template(root, cfg.readme.template)
     readme_active = cfg.readme.enabled and not skip_readme
 
     # A-WP2：面板已下线——prev 提前加载（A-WP3：native 失败时的回退来源）
@@ -340,7 +372,46 @@ def run(
         if (readme_active and cfg.readme.bilingual)
         else ("", "machine")
     )
-    takeover_active = readme_active and ("take_over" in (mode_zh, mode_en))
+    # 手写保护（2026-10-25）：auto 只在手写 README 的标题后插一个 AI 简介块；
+    # full 才整页接管（先开预览 PR）。两个模式共用「broken 一律不写」的安全底线。
+    handwritten = "take_over" in (mode_zh, mode_en)
+    use_embed = readme_active and cfg.readme.mode == "auto" and handwritten
+    embed_zh_due = use_embed and mode_zh == "take_over"
+    embed_en_due = (
+        use_embed
+        and cfg.readme.bilingual
+        and mode_en == "take_over"
+        and en_readme_path.exists()
+    )
+    broken_zh = mode_zh == "broken" or (
+        use_embed and mode_zh == "take_over" and not markers_balanced(disk_zh)
+    )
+    broken_en = mode_en == "broken" or (
+        use_embed and mode_en == "take_over" and not markers_balanced(disk_en)
+    )
+    broken_pending = readme_active and (broken_zh or broken_en)
+    takeover_active = (
+        readme_active
+        and cfg.readme.mode == "full"
+        and handwritten
+        and not broken_pending
+    )
+    # 首次插入 / 用户删块 / 手改块 / 简介已缓存但块没写：都必须开门补齐。
+    # 用缓存简介比较（AI 生成在门之后），避免「块缺失但数据没变」被永久跳过。
+    _prev_bio_zh = prev.bio.text if prev else ""
+    _prev_bio_en = prev.bio.text_en if prev else ""
+    embed_pending = bool(
+        (
+            embed_zh_due
+            and _prev_bio_zh
+            and block_body(disk_zh) != embed_body("zh", _prev_bio_zh)
+        )
+        or (
+            embed_en_due
+            and _prev_bio_en
+            and block_body(disk_en) != embed_body("en", _prev_bio_en)
+        )
+    )
     legacy_residue = readme_active and (
         any(m in disk_zh for m in LEGACY_MARKERS_ZH)
         or any(m in disk_en for m in LEGACY_MARKERS_EN)
@@ -518,7 +589,9 @@ def run(
             except Exception as exc:  # noqa: BLE001 —— 查不到按 main，PR 失败会回退
                 print(f"读取主页仓库默认分支失败（按 main 处理）：{exc}", file=sys.stderr)
     takeover_pr: dict | None = None
-    if takeover_active and b_client_eff is not None and not dry_run:
+    # 手写页也查一次：从 full 切到 auto 时，旧接管 PR 可能还开着。
+    # 不查会直接写 main，之后有人合并旧 PR 就把嵌入块覆盖掉了。
+    if readme_active and handwritten and b_client_eff is not None and not dry_run:
         try:
             takeover_pr = get_open_pr(
                 b_client_eff, owner_repo, TAKEOVER_BRANCH, base=profile_base
@@ -528,6 +601,15 @@ def run(
     if takeover_pr is not None:
         _num = takeover_pr.get("number")
         _url = takeover_pr.get("html_url") or ""
+        if use_embed:
+            _line = (
+                f"检测到旧的整页接管 PR #{_num} 仍待合并：auto 模式不会改写 main"
+                f"（避免合并旧 PR 时覆盖你的排版）。请关闭该 PR 以保留手写排版，"
+                f"或把 readme.mode 设为 full 继续整页方案：{_url}"
+            )
+            print(_line, file=sys.stderr)
+            _append_summary(f"- ⏳ {_line}")
+            return 0
         if force:
             # 用户明确要求强制重写：刷新这条待审核的 PR（仍不写 main）。
             # 分支上可能有人手动解决过冲突——必须提前说清会被覆盖。
@@ -590,6 +672,8 @@ def run(
         and not b_pending
         and not desc_dirty  # 描述写回有待办（首次记基线/新推送）时开门
         and not takeover_active  # 首次接管：指纹没变也必须开门
+        and not embed_pending  # 手写页待插/待更新简介块（首插、删块、手改块）
+        and not broken_pending  # marker 损坏：每轮开门提示修复，直到用户处理
     ):
         print("无变化，跳过更新")
         return 0
@@ -1170,79 +1254,160 @@ def run(
     readme_last_en_new = prev.readme_last_en if prev else ""
     if readme_active:
         # custom 区已在增量门前提取（首次接管检测复用同一份，避免二读）
-        _report_custom_mode(mode_zh, "README.md")
+        _report_custom_mode(mode_zh, "README.md", embed=use_embed)
         # 语言提醒（2026-10-25）：手写区语言不匹配只警告，绝不翻译或改写
+        _area_zh = "手写内容" if use_embed else "custom 区"
         if custom_zh and language_mismatch(custom_zh, "zh"):
-            _line = "⚠️ README.md 的 custom 区看起来是英文（目标语言：中文）；手写内容不会被翻译或改写"
+            _line = (
+                f"⚠️ README.md 的{_area_zh}看起来是英文（目标语言：中文）；"
+                "手写内容不会被翻译或改写"
+            )
             print(_line, file=sys.stderr)
             _append_summary(f"- {_line}")
         if cfg.readme.bilingual:
-            _report_custom_mode(mode_en, "README.en.md")
+            _report_custom_mode(mode_en, "README.en.md", embed=use_embed)
+            _area_en = "手写内容" if use_embed else "custom 区"
             if custom_en and language_mismatch(custom_en, "en"):
-                _line = "⚠️ README.en.md 的 custom 区看起来是中文（目标语言：英文）；手写内容不会被翻译或改写"
+                _line = (
+                    f"⚠️ README.en.md 的{_area_en}看起来是中文（目标语言：英文）；"
+                    "手写内容不会被翻译或改写"
+                )
                 print(_line, file=sys.stderr)
                 _append_summary(f"- {_line}")
-        ctx = TemplateContext(
-            username=cfg.github.username,
-            display_name=user.get("name") or cfg.github.username,
-            blog=user.get("blog") or "",
-            totals=totals,
-            featured=featured,
-            pinned=pinned,
-            bio_text=bio_text,
-            bio_text_en=bio_text_en,  # WP4：en 渲染的简介来源（空 → 英文占位注释）
-            cards_theme=cfg.readme.cards.theme,
-            cards_show=cfg.readme.cards.show,
-            include_update_time=cfg.readme.include_update_time,
-            # 时间戳本体不含时区字样——「（北京时间）」/「 (UTC+8)」由模板 labels 提供（WP3）
-            updated_at=now_bj.strftime("%Y-%m-%d %H:%M"),
-            short_intros=short_intros,
-            short_intros_en=short_intros_en,  # WP4：en 表格补位文案（空 → 回落 description）
-            visitors_badge=cfg.readme.visitors_badge,
-            key_env=cfg.ai.key_env_name,
-            custom_text=custom_zh,  # WP5：custom 区内容回注渲染（永久保留）
-            # A-WP-B（zh 方向）：非中文描述的中译（缺省回落原文）
-            display_descs=descs_zh,
-            sections=cfg.readme.sections,  # 板块开关（默认全开，输出与旧版一致）
-        )
-        content = render_readme(ctx, template_path)
-        # 英文版（WP3）：整页换 labels，简介/补位换 en 来源、custom 换 en 提取
-        content_en = ""
-        if cfg.readme.bilingual:
-            content_en = render_readme(
-                dataclasses.replace(
-                    ctx,
-                    bio_text=ctx.bio_text_en,
-                    short_intros=ctx.short_intros_en,
-                    display_descs=descs_en,  # A-WP-B：en 侧 AI 英译描述（缺省回落原文）
-                    custom_text=custom_en,
-                ),
-                template_path,
-                lang="en",
+        if use_embed:
+            # auto（默认）：手写 README 只插/更新一个 AI 简介块，其余字节不动。
+            # 没有 pin、没有统计卡、没有仓库列表——Pinned 也不会被重新展示或修改。
+            if mode_zh != "take_over":
+                print(
+                    "README.md 不是手写文件，auto 模式本轮不改动它", file=sys.stderr
+                )
+            if cfg.readme.bilingual and en_readme_path.exists() and mode_en != "take_over":
+                print(
+                    "README.en.md 不是手写文件，auto 模式本轮不改动它",
+                    file=sys.stderr,
+                )
+            if dry_run:
+                preview_zh = disk_zh
+                if embed_zh_due and bio_text.strip():
+                    preview_zh = upsert_block(disk_zh, embed_body("zh", bio_text)) or disk_zh
+                print(preview_zh)
+                if cfg.readme.bilingual:
+                    print(f"\n{'=' * 20} README.en.md (English) {'=' * 20}")
+                    preview_en = disk_en
+                    if embed_en_due and bio_text_en.strip():
+                        preview_en = (
+                            upsert_block(disk_en, embed_body("en", bio_text_en)) or disk_en
+                        )
+                    print(preview_en)
+                return 0
+            if embed_zh_due:
+                if not bio_text.strip():
+                    _line = (
+                        "README.md 还没有可用的 AI 简介（缺 AI key 或 bio 开关关闭），"
+                        "本次不写；配好后自动补上"
+                    )
+                    print(_line, file=sys.stderr)
+                    _append_summary(f"- ⚠️ {_line}")
+                else:
+                    out = upsert_block(disk_zh, embed_body("zh", bio_text))
+                    if out is not None:
+                        changed = write_if_changed(readme_path, out)
+            if embed_en_due:
+                if not bio_text_en.strip():
+                    _line = "README.en.md 还没有可用的英文简介，本次不写"
+                    print(_line, file=sys.stderr)
+                    _append_summary(f"- ⚠️ {_line}")
+                else:
+                    out = upsert_block(disk_en, embed_body("en", bio_text_en))
+                    if out is not None and write_if_changed(en_readme_path, out):
+                        changed = True
+            if changed:
+                _line = "主页模式：auto（仅维护 AI 简介块，其余内容未改动）"
+                _append_summary(f"- 🧩 {_line}")
+        else:
+            # 整页渲染：machine / preserved，或显式 mode: full
+            # auto → full 迁移：先把旧托管块从 custom 区剥掉，避免简介重复
+            custom_zh_for_render = (
+                strip_block(custom_zh) if mode_zh == "take_over" else custom_zh
             )
-        readme_last_new = content
-        readme_last_en_new = content_en if cfg.readme.bilingual else ""
-
-        if dry_run:
-            print(content)
+            custom_en_for_render = (
+                strip_block(custom_en) if mode_en == "take_over" else custom_en
+            )
+            ctx = TemplateContext(
+                username=cfg.github.username,
+                display_name=user.get("name") or cfg.github.username,
+                blog=user.get("blog") or "",
+                totals=totals,
+                featured=featured,
+                pinned=pinned,
+                bio_text=bio_text,
+                bio_text_en=bio_text_en,  # WP4：en 渲染的简介来源（空 → 英文占位注释）
+                cards_theme=cfg.readme.cards.theme,
+                cards_show=cfg.readme.cards.show,
+                include_update_time=cfg.readme.include_update_time,
+                # 时间戳本体不含时区字样——「（北京时间）」/「 (UTC+8)」由模板 labels 提供（WP3）
+                updated_at=now_bj.strftime("%Y-%m-%d %H:%M"),
+                short_intros=short_intros,
+                short_intros_en=short_intros_en,  # WP4：en 表格补位文案（空 → 回落 description）
+                visitors_badge=cfg.readme.visitors_badge,
+                key_env=cfg.ai.key_env_name,
+                custom_text=custom_zh_for_render,  # WP5：custom 区内容回注渲染（永久保留）
+                # A-WP-B（zh 方向）：非中文描述的中译（缺省回落原文）
+                display_descs=descs_zh,
+                sections=cfg.readme.sections,  # 板块开关（默认全开，输出与旧版一致）
+            )
+            content = render_readme(ctx, template_path)
+            # 英文版（WP3）：整页换 labels，简介/补位换 en 来源、custom 换 en 提取
+            content_en = ""
             if cfg.readme.bilingual:
-                print(f"\n{'=' * 20} README.en.md (English) {'=' * 20}")
-                print(content_en)
-            return 0
+                content_en = render_readme(
+                    dataclasses.replace(
+                        ctx,
+                        bio_text=ctx.bio_text_en,
+                        short_intros=ctx.short_intros_en,
+                        display_descs=descs_en,  # A-WP-B：en 侧 AI 英译描述（缺省回落原文）
+                        custom_text=custom_en_for_render,
+                    ),
+                    template_path,
+                    lang="en",
+                )
+            readme_last_new = content
+            readme_last_en_new = content_en if cfg.readme.bilingual else ""
 
-        # WP5 三路合并：手改保留、冲突以数据为准、删除恢复；升级首跑 base 兜底取盘上
-        # （该轮以新渲染为准，一次性——文档明示）
-        base_zh = prev.readme_last if (prev and prev.readme_last) else disk_zh
-        merged_zh = merge_readme_3way(base_zh, disk_zh, content)
-        merged_en = ""
-        if cfg.readme.bilingual:
-            base_en = prev.readme_last_en if (prev and prev.readme_last_en) else disk_en
-            merged_en = merge_readme_3way(base_en, disk_en, content_en)
-        # 首次接管不写本地：内容全部进 PR，等合并后才落 main（快照同船）
-        if not takeover_active:
-            changed = write_if_changed(readme_path, merged_zh)
-            if cfg.readme.bilingual and write_if_changed(en_readme_path, merged_en):
-                changed = True
+            if dry_run:
+                print(content)
+                if cfg.readme.bilingual:
+                    print(f"\n{'=' * 20} README.en.md (English) {'=' * 20}")
+                    print(content_en)
+                return 0
+
+            if broken_pending:
+                # marker 损坏时 custom 区会被当成空——整页写回就是拿空区覆盖原文。
+                # 一律不写（含同轮正常的另一个文件），修复注释对后自动恢复。
+                _line = (
+                    "主页 README 的 marker 损坏（start/end 不成对）：本轮不改动任何主页文件，"
+                    "修复后自动恢复"
+                )
+                print(_line, file=sys.stderr)
+                _append_summary(f"- ⚠️ {_line}")
+                readme_last_new = prev.readme_last if prev else ""
+                readme_last_en_new = prev.readme_last_en if prev else ""
+            else:
+                # WP5 三路合并：手改保留、冲突以数据为准、删除恢复；升级首跑 base 兜底取盘上
+                # （该轮以新渲染为准，一次性——文档明示）
+                base_zh = prev.readme_last if (prev and prev.readme_last) else disk_zh
+                merged_zh = merge_readme_3way(base_zh, disk_zh, content)
+                merged_en = ""
+                if cfg.readme.bilingual:
+                    base_en = (
+                        prev.readme_last_en if (prev and prev.readme_last_en) else disk_en
+                    )
+                    merged_en = merge_readme_3way(base_en, disk_en, content_en)
+                # 首次接管不写本地：内容全部进 PR，等合并后才落 main（快照同船）
+                if not takeover_active:
+                    changed = write_if_changed(readme_path, merged_zh)
+                    if cfg.readme.bilingual and write_if_changed(en_readme_path, merged_en):
+                        changed = True
     elif dry_run:
         print("readme 已禁用（readme.enabled=false 或 --skip-readme），跳过 overview 生成")
         return 0
@@ -1314,83 +1479,77 @@ def run(
     )
     if takeover_active:
         pr_opened = False
-        # 是否已经尝试向 GitHub 推送内容。推过就绝不回退写 main：
-        # 分支/PR 可能已经存在，main 再写一遍会让待审核的预览失去意义。
-        pushed = False
         if b_client_eff is None:
             _line = (
                 "检测到手写 README，但未配置 WORKFLOW_PAT，无法创建首次接管 PR；"
-                "已直接写入 main（配置后可用 PR 预览）"
+                "main 未改动。把 readme.mode 设为 auto 可只插入 AI 简介块，"
+                "或配置 WORKFLOW_PAT 后再整页接管"
             )
             print(_line, file=sys.stderr)
             _append_summary(f"- ⚠️ {_line}")
-        else:
-            # 阶段一：读默认分支 HEAD。失败说明什么都没推出去，回退写 main 仍然安全。
-            head_sha = ""
-            try:
-                head_data, _ = b_client_eff._get(f"{API}/repos/{owner_repo}/commits/HEAD")
-                if isinstance(head_data, dict):
-                    head_sha = str(head_data.get("sha") or "")
-            except Exception as exc:  # noqa: BLE001 —— 读不到就按无 PR 处理
-                print(f"读取主页仓库 HEAD 失败（按无 PR 处理）：{exc}", file=sys.stderr)
-            if not head_sha:
-                _line = "首次接管：无法读取主页仓库 HEAD，已回退直接写入 main（任务继续）"
-                print(_line, file=sys.stderr)
-                _append_summary(f"- ⚠️ {_line}")
-            else:
-                # 阶段二：推送 + 开/刷 PR。从这里开始失败也不再写 main。
-                pushed = True
-                try:
-                    rel_zh, zh_ok = _repo_rel_path(readme_path, root)
-                    rel_snap, snap_ok = _repo_rel_path(snap_path, root)
-                    files: dict[str, str] = {rel_zh: merged_zh}
-                    if cfg.readme.bilingual:
-                        rel_en, en_ok = _repo_rel_path(en_readme_path, root)
-                        files[rel_en] = merged_en
-                        if not en_ok:
-                            _warn = "README.en.md 不在仓库目录内，PR 中已回落文件名，请检查配置"
-                            print(_warn, file=sys.stderr)
-                            _append_summary(f"- ⚠️ {_warn}")
-                    files[rel_snap] = snapshot_text(new_snap)
-                    if not zh_ok or not snap_ok:
-                        _warn = "README/快照不在仓库目录内，PR 中已回落文件名，请检查配置"
-                        print(_warn, file=sys.stderr)
-                        _append_summary(f"- ⚠️ {_warn}")
-                    result = open_or_refresh_pr(
-                        b_client_eff,
-                        full_name=owner_repo,
-                        content=merged_zh,
-                        head_sha=head_sha,
-                        title=takeover_pr_title(cfg.github.username),
-                        body=takeover_pr_body(
-                            username=cfg.github.username,
-                            snapshot_path=rel_snap,
-                            bilingual=cfg.readme.bilingual,
-                        ),
-                        branch=TAKEOVER_BRANCH,
-                        base=profile_base,
-                        files=files,
-                    )
-                    _action = "已刷新" if result.refreshed else "已打开"
-                    _line = (
-                        f"首次接管：{_action} PR #{result.number}（{result.html_url}）；"
-                        "main 未改动，合并后自动进入正常更新"
-                    )
-                    print(_line)
-                    _append_summary(f"- ✅ {_line}")
-                    pr_opened = True
-                except Exception as exc:  # noqa: BLE001 —— 失败不回退，下轮重试
-                    _line = f"接管 PR 更新失败（main 未改动，下一轮自动重试）：{exc}"
-                    print(_line, file=sys.stderr)
-                    _append_summary(f"- ⚠️ {_line}")
+            return 0
+        # 阶段一：读默认分支 HEAD。读不到就无法建分支 → 跳过本轮，绝不直写 main。
+        head_sha = ""
+        try:
+            head_data, _ = b_client_eff._get(f"{API}/repos/{owner_repo}/commits/HEAD")
+            if isinstance(head_data, dict):
+                head_sha = str(head_data.get("sha") or "")
+        except Exception as exc:  # noqa: BLE001 —— 读不到就按无 PR 处理
+            print(f"读取主页仓库 HEAD 失败（按无 PR 处理）：{exc}", file=sys.stderr)
+        if not head_sha:
+            _line = (
+                "首次接管：无法读取主页仓库 HEAD，本轮跳过（main 未改动，下一轮自动重试）；"
+                "想避免整页接管可把 readme.mode 设为 auto"
+            )
+            print(_line, file=sys.stderr)
+            _append_summary(f"- ⚠️ {_line}")
+            return 0
+        # 阶段二：推送 + 开/刷 PR。从这里开始失败也不写 main。
+        try:
+            rel_zh, zh_ok = _repo_rel_path(readme_path, root)
+            rel_snap, snap_ok = _repo_rel_path(snap_path, root)
+            files: dict[str, str] = {rel_zh: merged_zh}
+            if cfg.readme.bilingual:
+                rel_en, en_ok = _repo_rel_path(en_readme_path, root)
+                files[rel_en] = merged_en
+                if not en_ok:
+                    _warn = "README.en.md 不在仓库目录内，PR 中已回落文件名，请检查配置"
+                    print(_warn, file=sys.stderr)
+                    _append_summary(f"- ⚠️ {_warn}")
+            files[rel_snap] = snapshot_text(new_snap)
+            if not zh_ok or not snap_ok:
+                _warn = "README/快照不在仓库目录内，PR 中已回落文件名，请检查配置"
+                print(_warn, file=sys.stderr)
+                _append_summary(f"- ⚠️ {_warn}")
+            result = open_or_refresh_pr(
+                b_client_eff,
+                full_name=owner_repo,
+                content=merged_zh,
+                head_sha=head_sha,
+                title=takeover_pr_title(cfg.github.username),
+                body=takeover_pr_body(
+                    username=cfg.github.username,
+                    snapshot_path=rel_snap,
+                    bilingual=cfg.readme.bilingual,
+                ),
+                branch=TAKEOVER_BRANCH,
+                base=profile_base,
+                files=files,
+            )
+            _action = "已刷新" if result.refreshed else "已打开"
+            _line = (
+                f"首次接管：{_action} PR #{result.number}（{result.html_url}）；"
+                "main 未改动，合并后自动进入正常更新"
+            )
+            print(_line)
+            _append_summary(f"- ✅ {_line}")
+            pr_opened = True
+        except Exception as exc:  # noqa: BLE001 —— 失败不回退，下轮重试
+            _line = f"接管 PR 更新失败（main 未改动，下一轮自动重试）：{exc}"
+            print(_line, file=sys.stderr)
+            _append_summary(f"- ⚠️ {_line}")
         if pr_opened:
             return 0
-        if not pushed:
-            # 没有 PAT 或读不到 HEAD：什么都没推出去，保持旧行为直接写 main
-            changed = write_if_changed(readme_path, merged_zh)
-            if cfg.readme.bilingual and write_if_changed(en_readme_path, merged_en):
-                changed = True
-            save_snapshot(snap_path, new_snap)
     else:
         save_snapshot(snap_path, new_snap)
 

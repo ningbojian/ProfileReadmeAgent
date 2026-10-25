@@ -11,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _workflow() -> dict:
+    """可复用 workflow：模板仓库自身的 guard 与全部执行逻辑都在这里。"""
+    return yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "reusable-update-profile.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _caller() -> dict:
+    """调用文件：用户从模板拿到的那份（触发器 + 输入 + secrets 转发）。"""
     return yaml.safe_load(
         (ROOT / ".github" / "workflows" / "update-profile.yml").read_text(encoding="utf-8")
     )
@@ -83,3 +93,45 @@ def test_removed_features_are_gone():
     assert not (ROOT / "src" / "profile_agent" / "projects.py").exists()
     assert not (ROOT / "tests" / "test_projects.py").exists()
     assert not (ROOT / "data" / "repo_inputs.json").exists()
+
+
+def _workflow_call(reusable: dict) -> dict:
+    """PyYAML 把 YAML 1.1 的 on 解析成 True；两种写法都兼容。"""
+    key = "on" if "on" in reusable else True
+    return reusable[key]["workflow_call"]
+
+
+def test_caller_uses_versioned_reusable_workflow_and_forwards_trigger_event():
+    """调用方按 @v1 引用；trigger_event 必须转发，否则定时门/改周期会失效。"""
+    job = _caller()["jobs"]["update"]
+    assert job["uses"].endswith(
+        "ningbojian/ProfileReadmeAgent/.github/workflows/reusable-update-profile.yml@v1"
+    )
+    assert job["with"]["trigger_event"] == "${{ github.event_name }}"
+
+
+def test_caller_passes_secrets_by_name_not_inherit():
+    """跨账号不能用 secrets: inherit；四个 secret 必须逐个按名字传。"""
+    caller = _caller()
+    assert caller["permissions"] == {"contents": "write", "issues": "write"}
+    secrets = caller["jobs"]["update"]["secrets"]
+    assert "inherit" not in secrets
+    assert set(secrets) == {
+        "WORKFLOW_PAT",
+        "ANTHROPIC_API_KEY",
+        "AI_API_KEY",
+        "DEEPSEEK_API_KEY",
+    }
+    assert all(v.startswith("${{ secrets.") for v in secrets.values())
+
+
+def test_reusable_declares_every_passed_secret_and_keeps_bools_as_strings():
+    """caller 传的 secret 必须声明；两个布尔控件用 string（空串不能被吞成 false）。"""
+    call = _workflow_call(_workflow())
+    declared = set(call["secrets"])
+    passed = set(_caller()["jobs"]["update"]["secrets"])
+    assert passed <= declared
+    inputs = call["inputs"]
+    assert inputs["update_readme"]["type"] == "string"
+    assert inputs["wait_for_merges"]["type"] == "string"
+    assert inputs["trigger_event"]["type"] == "string"

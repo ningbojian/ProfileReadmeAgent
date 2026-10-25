@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 START = "<!-- profile-agent:readme:start -->"
@@ -16,7 +17,7 @@ END = "<!-- profile-agent:readme:end -->"
 
 def _warn_skip(reason: str) -> None:
     print(
-        f"README 托管区 marker 不平衡（{reason}），已跳过该仓库，请手动检查 start/end 注释对",
+        f"README 托管区 marker 不平衡（{reason}），已跳过，请手动检查 start/end 注释对",
         file=sys.stderr,
     )
 
@@ -87,6 +88,117 @@ def apply_block(readme: str, new_text: str) -> str | None:
         return readme[:i] + f"{START}\n{text}\n{END}" + readme[j + len(END) :]
     _warn_skip(f"出现 {n_start} 个 start / {n_end} 个 end，歧义")
     return None
+
+
+def block_body(readme: str) -> str | None:
+    """取托管区正文（不含 marker）；未建立/不平衡返回 None。"""
+    if not markers_balanced(readme) or START not in readme:
+        return None
+    return readme.split(START, 1)[1].split(END, 1)[0].strip("\n")
+
+
+def _first_title_index(lines: list[str]) -> int | None:
+    """第一个「真实标题」的行下标（在其后插入）；没有返回 None。
+
+    真实 = 不在代码围栏 / 跨行 HTML 注释 / <details> 里。支持 Markdown `# `、
+    一行或跨行的 HTML `<h1>`、以及 setext 的 `标题\n====`。缩进标题（列表里的
+    `#`）跳过——那不是页面标题。
+    """
+    in_fence = False
+    fence = ""
+    in_comment = False
+    details = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if in_comment:
+            if "-->" in stripped:
+                in_comment = False
+            continue
+        if in_fence:
+            if stripped.startswith(fence):
+                in_fence = False
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = True
+            fence = stripped[:3]
+            continue
+        if stripped.startswith("<!--"):
+            if "-->" not in stripped:
+                in_comment = True
+            continue
+        lower = stripped.lower()
+        if lower.startswith("<details"):
+            details += 1
+            continue
+        if lower.startswith("</details"):
+            details = max(0, details - 1)
+            continue
+        if details:
+            continue
+        if line.startswith("# "):
+            return i
+        if "<h1" in lower:
+            if "</h1>" in lower:
+                return i
+            for k in range(i + 1, len(lines)):
+                if "</h1>" in lines[k].lower():
+                    return k
+            return i
+        # setext H1：标题行 + 下一行全是 =
+        if (
+            stripped
+            and i + 1 < len(lines)
+            and re.fullmatch(r"=+\s*", lines[i + 1].strip())
+        ):
+            return i + 1
+    return None
+
+
+def upsert_block(readme: str, body: str) -> str | None:
+    """插入或更新托管块；marker 不平衡返回 None（跳过，绝不猜修复）。
+
+    已有平衡 marker → 只替换区间内正文；没有 → 插在第一个真实标题之后，
+    没有标题则追加到文末（绝不插文件头——那会破坏 front matter）。
+    """
+    if not markers_balanced(readme):
+        _warn_skip("start/end 不配对或顺序颠倒")
+        return None
+    text = _sanitize(body).strip("\n")
+    if START in readme:
+        return apply_block(readme, text)
+    block = f"{START}\n{text}\n{END}\n"
+    lines = readme.splitlines(keepends=True)
+    idx = _first_title_index(lines)
+    if idx is None:
+        if not readme:
+            return block
+        prefix = readme if readme.endswith("\n") else readme + "\n"
+        return prefix + "\n" + block
+    head = "".join(lines[: idx + 1])
+    if not head.endswith("\n"):
+        head += "\n"
+    rest = "".join(lines[idx + 1 :])
+    if rest and not rest.startswith("\n"):
+        rest = "\n" + rest
+    return head + "\n" + block + rest
+
+
+def strip_block(text: str) -> str:
+    """剥掉一对平衡的托管块（auto → full 迁移用，防简介重复）。
+
+    不平衡或没有 marker 时原样返回——半截块不动，交给 full 路径的 broken 跳过。
+    """
+    if not markers_balanced(text) or START not in text:
+        return text
+    i = text.index(START)
+    j = text.index(END) + len(END)
+    before = text[:i].rstrip("\n")
+    after = text[j:].lstrip("\n")
+    if not before:
+        return after
+    if not after:
+        return before + "\n"
+    return before + "\n\n" + after
 
 
 def merge_readme(existing: str, ai_text: str) -> tuple[str, str]:

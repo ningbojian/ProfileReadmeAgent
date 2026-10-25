@@ -353,3 +353,24 @@ def test_repo_descriptions_enabled_must_be_bool(tmp_path):
     )
     with pytest.raises(ConfigError, match="repo_descriptions.enabled"):
         load_config(path)
+
+
+# ---- readme.mode（手写 README 的保护策略，2026-10-25）----
+
+
+def test_readme_mode_defaults_to_auto(tmp_path):
+    """默认 auto：手写 README 只插一个 AI 简介块，不整页重排。"""
+    path = _write(tmp_path, 'github:\n  username: "a"\n')
+    assert load_config(path).readme.mode == "auto"
+
+
+def test_readme_mode_full_is_accepted(tmp_path):
+    path = _write(tmp_path, 'github:\n  username: "a"\nreadme:\n  mode: "full"\n')
+    assert load_config(path).readme.mode == "full"
+
+
+def test_readme_mode_rejects_unknown_value(tmp_path):
+    """拼错（如 ful）必须报错：静默回落会让人以为已切换整页模式。"""
+    path = _write(tmp_path, 'github:\n  username: "a"\nreadme:\n  mode: "ful"\n')
+    with pytest.raises(ConfigError, match="readme.mode"):
+        load_config(path)

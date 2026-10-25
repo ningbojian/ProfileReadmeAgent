@@ -440,3 +440,13 @@ def test_sections_off_keeps_custom_and_notes():
     assert "<!-- profile-agent:custom:start -->" in out
     assert "## ℹ️ 说明备注" in out
     assert "> [!NOTE]" in out
+
+
+def test_embed_body_uses_language_specific_title():
+    """嵌入块的标题跟语言走；正文原样，不加任何统计/置顶内容。"""
+    from profile_agent.render import embed_body
+
+    assert embed_body("zh", "我是一名开发者。") == "## 🤖 AI 简介\n\n我是一名开发者。"
+    assert embed_body("en", "I build things.") == "## 🤖 AI Bio\n\nI build things."
+    body = embed_body("zh", "我是一名开发者。")
+    assert "统计" not in body and "置顶" not in body

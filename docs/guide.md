@@ -1,4 +1,4 @@
-# GitHub Overview Auto Agent 使用指南
+# ProfileReadmeAgent 使用指南
 
 自动维护你的 GitHub 个人主页 README（`你的用户名/你的用户名` 仓库）：拉取公开仓库数据、整理统计、项目列表（默认全部仓库）、用 AI 生成中文简介，并做增量检测省额度。
 
@@ -21,24 +21,73 @@
 1. **一键获取仓库**：打开模板仓库 [ningbojian/ProfileReadmeAgent](https://github.com/ningbojian/ProfileReadmeAgent)，点绿色 **"Use this template" → Create a new repository**，把新仓库改名为 `你的用户名/你的用户名`。
    > 用户名不用填：工具会自动读取仓库所有者作为用户名。
 2. **配 AI key（可选）**：仓库 → Settings → Secrets and variables → Actions → New secret，名称 `ANTHROPIC_API_KEY`，值是你的 Claude API key。不配也能用（AI 内容降级为数据版）。
-3. **配 PR / 写权限令牌（要用「各仓库 README 自动更新」「首次接管预览」「仓库描述写回」必配，2 分钟）**：生成一个 classic PAT（勾 `repo` + `workflow` 两项），存成 secret `WORKFLOW_PAT`——没有它模式 B 无法推送分支/开 PR，首次接管的预览 PR 也开不出来（会明确警告并直接写 main），仓库描述写回同样跳过；其余功能不受影响。详细步骤与常见坑见下文「配置 WORKFLOW_PAT」。
+3. **配 PR / 写权限令牌（要用「各仓库 README 自动更新」「`readme.mode: full` 的整页接管预览」「仓库描述写回」必配，2 分钟）**：生成一个 classic PAT（勾 `repo` + `workflow` 两项），存成 secret `WORKFLOW_PAT`——没有它模式 B 无法推送分支/开 PR，整页接管会跳过本轮并提示，仓库描述写回同样跳过；其余功能不受影响。手写 README 默认走 auto 模式，只插一个 AI 简介块，**不需要 PAT**。详细步骤与常见坑见下文「配置 WORKFLOW_PAT」。
 4. **手动跑一次**：Actions 页面 → Update Profile README → Run workflow。完成后 **overview 更新**直接出现在 README。
 
-> **已经有 `你的用户名/你的用户名` 仓库？** 不要删。先在它的 Settings → Rename 改成临时名字（如 `profile-backup`——提交历史与原 README 都完整保留），再从模板创建新的同名仓库；把旧 README 全文粘贴进新仓库的 `README.md`，然后跑第一次——旧内容会逐字进入可编辑区，并先开预览 PR 让你确认（见「首次接管」）。确认无误后旧仓库留着当备份或删掉都行。
+> **已经有 `你的用户名/你的用户名` 仓库？** 不要删。先在它的 Settings → Rename 改成临时名字（如 `profile-backup`——提交历史与原 README 都完整保留），再从模板创建新的同名仓库；把你的旧 README **全选后整份粘贴**进新仓库的 `README.md`（覆盖整个文件——别把模板第一行的说明注释留在上面，否则工具会当成机器页整页替换），然后跑第一次：默认 `readme.mode: auto`，只会在你的第一个标题后加一个 AI 简介块，其他内容原样保留（见「已有手写 README」）。确认无误后旧仓库留着当备份或删掉都行。
 
 之后默认每 3 天定时自动更新（北京时间约 10:23 唤醒检查），也可随时手动触发。所有可选项都在 `config.yaml` 里，网页上点 Edit 就能改。
 
+## 安装方式与版本更新（工具更新怎么进到你的仓库）
+
+工具代码只有一份，放在工具仓库 [ningbojian/ProfileReadmeAgent](https://github.com/ningbojian/ProfileReadmeAgent)。你的主页仓库只保留一份约 35 行的**调用文件** `.github/workflows/update-profile.yml`，全部执行逻辑在工具仓库的可复用 workflow 里，按标签引用：
+
+```yaml
+uses: ningbojian/ProfileReadmeAgent/.github/workflows/reusable-update-profile.yml@v1
+```
+
+所以**你不需要复制代码、也不需要手动同步**：工具仓库更新后，你的下一次运行自动用上新版本。你的仓库里没有 `src/`，也就没有「代码过期」这回事。
+
+| 你写的版本 | 行为 | 适合 |
+| --- | --- | --- |
+| `@v1`（推荐，默认） | 跟随 v1 系列的最新提交，修 bug / 小功能自动生效 | 绝大多数人 |
+| `@v1.0.0` | 固定在某个版本，永远不变 | 需要绝对稳定 |
+| `@main` | 最新开发版 | 尝鲜、帮忙验证 |
+
+升级或降级只是把 `@v1` 改成 `@v1.0.0`（或反过来）再提交，下一次运行即生效。破坏性变更会发 `v2`，`v1` 继续可用——你不改就一直能跑。
+
+### 两种安装方式
+
+1. **Use this template（推荐，一键）**：工具仓库 → **Use this template → Create a new repository**，仓库名 `你的用户名/你的用户名`（保持 Public）。调用文件与 `config.yaml` 会一起带过来，跑一次 Actions 即可；之后自动收更新。
+2. **手动新建仓库**：新建 `你的用户名/你的用户名` 公开仓库，只复制两份文件：
+   - 工具仓库的 [`.github/workflows/update-profile.yml`](https://github.com/ningbojian/ProfileReadmeAgent/blob/main/.github/workflows/update-profile.yml) → 你的 `.github/workflows/update-profile.yml`
+   - 工具仓库的 [`config.yaml`](https://github.com/ningbojian/ProfileReadmeAgent/blob/main/config.yaml) → 你的 `config.yaml`
+
+   然后手动 Run workflow 一次。同样自动收更新。
+
+> `config.yaml` 里的 `github.username` 留空即可（自动取仓库所有者）。调用文件里的 `permissions`（`contents: write` + `issues: write`）不要删，删了推不动 README。
+
+### 从旧模板副本迁移（2026-10 之前建的仓库）
+
+旧模板把整套代码（`src/`、`tests/`、`templates/`）复制进了你的仓库，那些是快照，收不到工具更新。迁移只做一件事：
+
+1. 把 `.github/workflows/update-profile.yml` 的内容**整个替换**成工具仓库里的调用文件（约 35 行）；
+2. 可选：删掉 `src/`、`tests/`、`templates/`、`pyproject.toml`、`docs/`——新机制不执行它们，留着也不影响；
+3. 手动 Run workflow 一次确认能跑通。
+
+之后你的仓库就是标准用户：工具更新自动生效，不用再同步代码。`config.yaml`、`README.md`、`data/` 都原样保留。
+
 ## 本地运行
 
+Actions 里跑不需要任何本地环境。想在本地跑，装一次工具即可（工具代码不在你的主页仓库里）：
+
 ```bash
+git clone https://github.com/ningbojian/ProfileReadmeAgent.git
+cd ProfileReadmeAgent
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-python -m profile_agent --no-ai            # 不调 AI，直接生成
-python -m profile_agent                    # 完整运行（需 ANTHROPIC_API_KEY）
-python -m profile_agent --dry-run          # 只打印不写文件
-python -m profile_agent --force            # 忽略增量检测（只重写主页，不强制仓库 README；接管 PR 打开时会刷新它）
-python -m profile_agent --fixture tests/fixtures --no-ai --dry-run   # 完全离线演示
+
+cd /path/to/你的用户名        # 回到主页仓库目录（config.yaml 所在处）
+profile-agent --no-ai --dry-run            # 只打印不写文件
+profile-agent --no-ai                      # 不调 AI，直接生成
+profile-agent                              # 完整运行（需 ANTHROPIC_API_KEY）
+profile-agent --force                      # 忽略增量检测（只重写主页）
+profile-agent --fixture /path/to/ProfileReadmeAgent/tests/fixtures --no-ai --dry-run  # 完全离线演示
 ```
+
+`profile-agent` 与 `python -m profile_agent` 等价，`--config` 可指定其他路径。
+
+> **模板路径规则**：`readme.template` 的默认值 `templates/profile.md.j2` **跟随工具安装目录**——工具升级，模板也一起更新。想用自己改过的模板：把模板文件复制到主页仓库里，并把 `readme.template` 改成那个文件名（默认路径之外的配置永远以本地文件为准，不会被上游覆盖）。
 
 > 本地运行前，先把 `config.yaml` 的 `github.username` 填成你的用户名（Actions 里留空即可，会自动取仓库所有者）。
 
@@ -84,16 +133,16 @@ ai:
 
 ### 定时是怎么运作的（间隔门）
 
-默认机制是「**每天唤醒 + 间隔门**」：cron 每天 02:23 UTC（北京 10:23）唤醒一次，第一步读 workflow 文件里的两行标记决定今天是否真跑——
+默认机制是「**每天唤醒 + 间隔门**」：cron 每天 02:23 UTC（北京 10:23）唤醒一次，第一步读**调用文件**（`.github/workflows/update-profile.yml`）里的两行标记决定今天是否真跑——
 
 ```yaml
 # interval_days: 3       ← 每 N 天跑一次（Run workflow 下拉改写）
 # interval_anchor: 2026-10-22  ← 间隔锚点日期（改间隔时自动重置为当天）
 ```
 
-- **改间隔**：Run workflow → 「定时运行间隔」下拉选「每 3 天」之类 → 本轮结束时自动改写上面两行并提交（需 WORKFLOW_PAT）；没配 `WORKFLOW_PAT` 时会明确提示「改动未保存」，周期保持不变，其余更新照常；选「不修改」只跑本轮不改周期；
+- **改间隔**：Run workflow → 「定时运行间隔」下拉选「每 3 天」之类 → 本轮结束时自动改写调用文件里的上面两行并提交（需 WORKFLOW_PAT）；没配 `WORKFLOW_PAT` 时会明确提示「改动未保存」，周期保持不变，其余更新照常；选「不修改」只跑本轮不改周期；
 - 没到日子的唤醒会在第一步直接结束（绿色秒过，日志写明「非每 N 天的运行日」），不装依赖不调 API；
-- 想完全手动控制：直接删掉这两行标记，恢复纯 cron 语义。
+- 想完全手动控制：直接删掉这两行标记，恢复纯 cron 语义（调用文件改过名的话请保留标记，工具靠它定位文件）。
 
 ### cron 对照表（手动改 cron 时参考）
 
@@ -111,7 +160,7 @@ ai:
 
 **主页「暂无描述」自动补位**：项目列表里 description 为空的仓库，会用它自己 README 的内容生成一句 ≤80 字的中文短描述顶上（不再显示「暂无描述」）。不想要这个行为：`ai.fill_empty_descriptions: false`。profile 仓库自身（`用户名/用户名`）始终除外——它的 README 是工具自己的输出，若也补位会自引用导致每轮重生成、反复开 PR 烧额度。
 
-## 配置 WORKFLOW_PAT（模式 B / 首次接管预览 / 描述写回 / 改 workflow 必配）
+## 配置 WORKFLOW_PAT（模式 B / 整页接管预览 / 描述写回 / 改 workflow 必配）
 
 GitHub 有个硬性限制——Actions 内置的 `GITHUB_TOKEN` 无权修改 `.github/workflows/` 下的文件，也无权替你向其他仓库推送分支/开 PR，所以这两件事都需要你自己的令牌：
 
@@ -123,7 +172,7 @@ GitHub 有个硬性限制——Actions 内置的 `GITHUB_TOKEN` 无权修改 `.g
 
 > **换令牌后必须重新粘贴进 secret**：secret 存的是你粘贴那一刻的值，在 PAT 页面重建/续期/改权限都**不会**自动同步到 `WORKFLOW_PAT`——换了令牌却忘了更新 secret，是「明明配了 classic PAT 却还是 404」的第一大原因。
 
-> **不配置也完全能用**：overview、统计、定时更新都不受影响；只是模式 B 静默跳过、首次接管改为直接写 main、仓库描述写回跳过，改了 workflow 文件（如 cron）也推不上去。
+> **不配置也完全能用**：overview、统计、定时更新都不受影响；手写 README 默认 auto 模式只插 AI 简介块，本来就不需要 PAT。需要 PAT 的是：模式 B 推送/开 PR、`readme.mode: full` 的整页接管预览、仓库描述写回——缺 PAT 时这三处跳过并明确提示，改了 workflow 文件（如 cron）也推不上去。
 
 ## 各仓库 README 自动更新（模式 B，默认关闭）
 
@@ -210,25 +259,48 @@ readme:
 - 只影响工具生成的内容：custom 区、README.en.md 的手写内容照旧保留；
 - 想恢复：把对应开关改回 `true`，下一轮运行自动出现。
 
-## 首次接管：先看 PR 再决定
+## 已有手写 README：默认只加一个 AI 简介块
 
-第一次接手一份**手写 README**（还没有 profile-agent 标记）时，工具不会直接改 main：
+第一次接手一份**手写 README**（还没有 profile-agent 标记）时，默认 `readme.mode: auto`：工具只在你的第一个标题后面插入一个块，**块外内容逐字节保留**——图片、徽章、`<p align="center">`、`<details>`、表格、别的工具生成的排版都不动：
+
+```markdown
+<!-- profile-agent:readme:start -->
+## 🤖 AI 简介
+
+（AI 写的简介）
+<!-- profile-agent:readme:end -->
+```
+
+- **只有简介**：没有统计卡、置顶板块、仓库列表。**Pinned 永远不会被修改**，块里也不会重新展示它——工具只通过 GraphQL 读取 Pinned，那是 GitHub 的用户设置，不在 README 里；
+- 下一轮只更新块内简介；块外一个字节不改；
+- 删掉这个块，下一轮会自动补回（和「删除会恢复」一致）；手改块里的文字，下一轮按 AI 简介恢复（块是托管区）；
+- 块 marker 缺一半、多对或顺序颠倒：跳过该文件并在日志警告，绝不猜修复；
+- 没有 AI key 或 `readme.sections.bio: false`：不插空块、文件一字节不改，配好后自动补上；
+- 双语且 `README.en.md` 也是手写：两个文件各插一个对应语言的块（英文为 `## 🤖 AI Bio`）；`README.en.md` 不存在时不会凭空创建；
+- 一对文件里只有一个手写、另一个是机器页：只动手写那个，机器页本轮不动并在日志说明。
+
+标题定位会跳过代码围栏、跨行 HTML 注释和 `<details>` 里的假标题，也认 HTML `<h1>`（含跨行）和 setext 标题；完全没有标题时追加到文件末尾（不插文件头，避免破坏 front matter）。这是纯文本插入，任何 Markdown/HTML/图片格式都原样保留。
+
+> 从模板仓库创建的新仓库是例外：模板说明页按机器文件处理，第一次运行会直接生成主页并替换它，**不会只插一个块**；只有你已经在 `用户名/用户名` 里写了手写 README，才走上面的保护路径。
+
+### 想要整页接管：`readme.mode: full`
+
+如果你就是想把主页交给工具排版，把 `config.yaml` 里的 `readme.mode` 改成 `"full"`。第一次遇到手写 README 时：
 
 1. 新旧内容一起放进一个 PR（分支 `readme-auto/takeover`）。PR 里同时有 `README.md`、`README.en.md`（双语时）和 `data/snapshot.json`；
 2. 你原来的手写内容会**逐字完整**放进 custom 标记区，联系方式、社交账号、HTML 都保留；
 3. **合并 PR** → 新版面进入主页，下一轮开始正常自动更新；**关闭 PR** → main 完全不变；
 4. PR 打开期间，每轮只提示「仍待合并」并跳过——不重新渲染、不调 AI、不改仓库描述；已在清单里打勾的 PR 仍会按你的授权合并（那是你手动授权的动作，不受接管暂停影响）。
 
-> 从模板仓库创建的新仓库是例外：模板说明页按机器文件处理，第一次运行会直接生成主页并替换它，**不会开预览 PR**；只有你已经在 `用户名/用户名` 里写了手写 README，才会先开预览 PR。
-
 需要注意：
 
-- 关闭接管 PR 后，下一轮会重新开一个（main 上没有地方记录「已拒绝」）。想彻底不接管，请把 `readme.enabled` 设为 `false`；
+- 关闭接管 PR 后，下一轮会重新开一个（main 上没有地方记录「已拒绝」）。想彻底不接管，把 `readme.mode` 改回 `auto`；
 - 快照必须和 README 一起合并（已经打包在同一个 PR 里），否则下一轮会再次进入接管；
 - PR 打开期间 main 又前进了，合并可能冲突：关闭重开，或手动解决冲突；**在分支上手动解决过冲突后，合并前别用「强制重写主页」**——它会按最新 main 重新生成并刷新该 PR，覆盖你在分支上的改动；
 - 想主动刷新这个 PR：手动运行时选「强制重写主页」（或本地 `--force`）。工具会以最新 main 为基线重新生成并刷新同一个 PR，**main 仍然不改动**；
-- **推送失败也不会回退写 main**：只要已经开始推送（或 PR 已存在），失败时只警告「main 未改动，下一轮自动重试」，本地不写文件、不存快照；只有连 HEAD 都读不到（什么都没推出去）才会按旧行为直接写 main；
-- **没有配置 `WORKFLOW_PAT`**：无法开 PR，工具会明确警告，然后按旧行为直接写入 main；配置后自动启用预览。
+- **失败一律不写 main**：推送/开 PR 失败、连 HEAD 都读不到、没有配置 `WORKFLOW_PAT`，本轮都跳过并警告「main 未改动，下一轮自动重试」——要么把 `readme.mode` 改回 `auto`（只插简介块，不需要 PAT），要么配好 `WORKFLOW_PAT` 再整页接管；
+- 从 `auto` 切到 `full`：旧简介块会先从 custom 区剥掉，再整页接管，不会出现两段简介；
+- 旧的整页接管 PR 还开着时切回 `auto`：本轮跳过并提示——关闭那个 PR（推荐，保留你的排版）或把 `readme.mode` 改回 `full`，避免日后合并旧 PR 把简介块覆盖掉。
 
 ## 手写内容语言不匹配（只提醒，不翻译）
 
@@ -263,7 +335,7 @@ repo_descriptions:
 - 旧值写在快照的 `previous` 字段，可据此手动回滚；
 - 极端情况：描述已写回、但程序在保存快照前中断，下一轮会把这次写入误判为「你手动改过」而永久停手。GitHub 不支持给描述开 PR，这个瞬间无法完全避免；遇到就在快照里删掉该仓库条目恢复；
 - GitHub 不支持给描述开 PR，所以这个功能默认关闭，并且只写有推送的仓库、手改即停；
-- 首次接管 PR 打开期间暂停写回，合并或关闭后恢复。
+- 整页接管 PR（`readme.mode: full`）打开期间暂停写回，合并或关闭后恢复。
 
 ## 置顶项目（跟随 GitHub 原生 Pinned）
 
@@ -274,6 +346,7 @@ repo_descriptions:
 - **生效时机**：改完 Pinned 后手动 Run workflow（约半分钟）或等下一次定时轮——**Pinned 变更没有自动触发器**（GitHub 不提供该事件的 webhook）；
 - **读取失败**：沿用上一次的置顶名单（防闪断）；首次运行/离线场景回退 `config.yaml` 的 `featured.pin` 种子；
 - **旧面板迁移**：从带勾选面板的旧版升级，第一次运行会自动把 README 里的旧面板/指针一次性摘除（custom 区内容不受影响）；
+- **工具从不修改 Pinned**：只读取，不写入；auto 模式的简介块里也不展示置顶，改 Pinned 不会触发任何运行；
 - 页面结构不变：置顶在前、全量表格在后，只是置顶来源换成了官方界面。
 
 ## 保存即触发与成本
@@ -285,7 +358,7 @@ repo_descriptions:
 - **数据真变** → 与定时轮同价，push 只是提前到秒级；
 - **防循环**：工具自己的提交带 `[skip ci]`，且触发只圈两个 README 文件，不会自己触发自己。
 
-> 从旧 fork 升级注意：如果你的 fork 早于「保存即触发」上线，上游的 workflow 改动不会自动进来——需要手动同步 `.github/workflows/update-profile.yml`（或重新 Use this template），push 触发才会生效。
+> **旧副本升级**：早于「可复用 workflow」上线的仓库（无论是 fork 还是 Use this template 建的），旧的 workflow 文件是快照，上游改动不会自动进来——按上文「从旧模板副本迁移」把调用文件换掉即可，之后自动收更新。
 
 ## 交互速查（每个控件一行后果）
 
@@ -308,7 +381,8 @@ repo_descriptions:
 - **生成区手工微调保留**：问候语、简介措辞等小改动，下次运行后原样在；与数据变化冲突的行以数据为准（比如你手改了 star 数，下轮会改回真实值）；
 - **删除会恢复**：删掉生成区内容（表格行、板块）会在下次运行恢复——想隐藏内容请改 config 开关，别删文件；
 - **custom 区永远保留**：custom 标记（`profile-agent:custom`）之间的自由文字，永远不被覆盖；旧版置顶面板会在升级首跑被一次性摘除（不适用「删除会恢复」——它已整体下线）；
-- **首次接管**：手写的旧 README 第一次运行时整份进入 custom 区，一个字节不丢；配置了 `WORKFLOW_PAT` 时先开 PR 预览（见「首次接管：先看 PR 再决定」），没有 PAT 才直接写 main；
+- **手写 README 默认只加块**：第一次接手手写文件时（`readme.mode: auto`），只在第一个标题后插一个 AI 简介块，其余内容逐字节不动；`readme.mode: full` 才把整份内容放进 custom 区并先开预览 PR（见「已有手写 README」）；
+- **Pinned 永远不改**：工具只读取 GitHub 原生 Pinned（GraphQL），从不写入；改 Pinned 也不会触发运行；
 - **升级首跑**：从旧版升级的第一次运行会以新渲染为准重排一次（一次性，含旧面板摘除），之后手改永久保留。
 
 ## 配置项参考（config.yaml）
@@ -342,6 +416,8 @@ readme:
   include_update_time: true
   visitors_badge: false   # true = 主页嵌入「主页访问量」计数徽章（komarev.com 免费第三方服务，页面渲染一次 +1；GitHub 不提供官方的主页访问量 API，这是业界通行做法）
   bilingual: true         # true = 同时生成 README.en.md，两文件顶部互链切换
+  mode: "auto"            # auto = 手写 README 只插/更新一个 AI 简介块，其余字节不动（默认）
+                          # full = 整页接管（有 WORKFLOW_PAT 先开预览 PR，没有则跳过本轮）
   sections:               # 板块开关：只隐藏生成区，不动手写内容
     bio: true             # 简介
     stats: true           # 统计卡与技术标签
@@ -376,14 +452,16 @@ repo_descriptions:
 - **某仓「读取失败 404」但它明明是公开仓库**：几乎都是 `WORKFLOW_PAT` 的问题。按顺序查：① secret 里的值是不是 **classic PAT**（`ghp_` 开头）——fine-grained PAT 若选了 "Only select repositories"，对未勾选的公开仓一律 404；② 换了新令牌后**有没有把新值重新粘进 secret**（在 PAT 页面重建/续期不会自动同步到 secret，这是最常见的坑）；③ 令牌是否已过期。一个仓读取失败只跳过它自己，不影响其他仓库。
 - **AI 简介没生成**：检查 secret 名称是否为 `ANTHROPIC_API_KEY`；工具在 AI 失败时会保留旧简介，不会让任务失败。
 - **英文版里仓库描述还是中文**：三种情况——① 描述本身不含中文（纯英文等非中文描述直接照搬、不翻译）；② AI 翻译失败或超时（本轮沿用原文，下轮自动重试）；③ secret 里没配 `ANTHROPIC_API_KEY`（AI 能力整体降级）。
-- **手改 README 会被覆盖吗**：不会整篇覆盖——生成区随数据更新，你的手工微调会保留（与数据变化冲突处以数据为准；删除生成区内容会在下次恢复，想隐藏请改 config）；custom 标记之间的内容永远保留（旧版置顶面板已在升级时移除）。改坏了想重置：把手改行改回去或清空 custom 区即可，下次运行自动恢复规范版。
+- **手改 README 会被覆盖吗**：不会整篇覆盖。手写页默认 `auto`：工具只在第一个标题后插/更新一个 AI 简介块，其余内容逐字节不动；块被删了会补回，块内文字是托管区。整页生成的文件（模板页 / `mode: full`）里，生成区随数据更新、手工微调保留（与数据冲突处以数据为准；删除生成区内容会在下次恢复，想隐藏请改 config），custom 标记之间的内容永远保留。
+- **我用了别的工具、README 排版很复杂（HTML/图片/表格），会被魔改吗**：不会。`auto` 模式是纯文本插入——只在标题后加一个块，图片、徽章、居中 `<p>`、`<details>`、表格、代码块都原样保留；marker 损坏时宁可不写也不猜修复。只有你显式设 `readme.mode: full` 才会整页重排（而且先开预览 PR）。
+- **只加一个托管块，我的 Pinned 会变吗**：不会。Pinned 是 GitHub 用户设置，工具只读不写；简介块里也不展示它。
 - **数据是旧的**：Actions 手动触发 +「本次强制重跑」选「强制重写主页」即可刷新。
 - **模式 B 没跑**：看 Summary 里的「模式 B 状态」行——最常见是没配 `WORKFLOW_PAT`（无法推送/开 PR，配好自动启用）或 `repo_readmes.enabled` 还是 false；选了「强制重跑各仓库 README」但 config 里是 false 也会给冲突警告。
 - **@提醒没收到**：确认本仓库 Issues 没被关闭、GitHub 通知设置里勾了 Issues；清单入口固定在本仓「🔔 README 更新待合并清单」issue + 运行页 Summary 快照。
-- **首次接管没开 PR**：确认配的是 classic `WORKFLOW_PAT`（fine-grained 选 "Only select repositories" 会对主页仓库 404）。没有 PAT 时工具会警告后直接写 main；有 PAT 但推送/开 PR 失败时**不会**回退写 main——Summary 写明原因，下一轮自动重试。
+- **整页接管没开 PR**：整页接管（`readme.mode: full`）需要 classic `WORKFLOW_PAT`（fine-grained 选 "Only select repositories" 会对主页仓库 404）。没有 PAT、读不到 HEAD 或推送失败时都**不会**写 main——Summary 写明原因，下一轮自动重试；手写页默认 `auto` 模式不需要 PR。
 - **仓库描述没更新**：按顺序查：① `repo_descriptions.enabled` 是否 true（必须是真正的 true/false，带引号的 `"false"` 会直接报配置错误）；② 该仓库是否第一次见到（只记基线，等下一条推送）；③ 是否在 GitHub 上手动改过描述（会永久跳过，删掉快照里对应条目可恢复）；④ 是否超过每轮 5 个的上限（其余下轮继续）；⑤ 是否连续 3 轮失败已暂停（下次推送后自动恢复）；⑥ 是否缺 `WORKFLOW_PAT` 或 AI key。
 - **板块开关关了，手写内容会丢吗**：不会。`readme.sections` 只隐藏工具生成的简介/统计/置顶/列表；custom 区与 README.en.md 的手写内容不受影响。
-- **把本工具分享给别人**：对方只需完成「快速开始」4 步；这个仓库就是模板仓库。
+- **把本工具分享给别人**：对方按「安装方式与版本更新」里两种方式之一建库即可；建好后跟着 `@v1` 走，工具更新自动生效，不需要对方同步代码。
 
 ## 开发
 

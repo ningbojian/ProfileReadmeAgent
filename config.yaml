@@ -33,6 +33,7 @@ readme:
   include_update_time: true
   visitors_badge: false # true = 主页嵌入「主页访问量」计数徽章（komarev.com 免费第三方服务）
   bilingual: true # 同时生成 README.en.md（英文版），两文件顶部互链切换
+  mode: "auto" # 手写 README 的保护策略：auto = 只在第一个标题后插/更新一个 AI 简介块，其余字节不动（默认）；full = 整页接管（有 WORKFLOW_PAT 才先开预览 PR，没有则跳过本轮）
   sections: # 板块开关（默认全开）：只隐藏生成区，不动手写/custom 内容
     bio: true # 简介
     stats: true # 统计卡与技术标签

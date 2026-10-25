@@ -9,9 +9,17 @@ FIXTURES = Path(__file__).parent / "fixtures"
 TEMPLATE = Path(__file__).parent.parent / "templates" / "profile.md.j2"
 
 
-def _write_config(tmp_path: Path, username: str = "alice") -> Path:
+def _write_config(
+    tmp_path: Path,
+    username: str = "alice",
+    *,
+    mode: str | None = None,
+    bilingual: bool | None = None,
+) -> Path:
     cfg = tmp_path / "config.yaml"
     as_posix = lambda p: p.as_posix()  # noqa: E731
+    mode_line = f'  mode: "{mode}"\n' if mode else ""
+    bi_line = "" if bilingual is None else f"  bilingual: {'true' if bilingual else 'false'}\n"
     cfg.write_text(
         f"""
 github:
@@ -21,7 +29,7 @@ repos:
 readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
-snapshot:
+{bi_line}{mode_line}snapshot:
   path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
 """,
         encoding="utf-8",
@@ -897,8 +905,8 @@ def test_custom_region_language_mismatch_warns_without_rewriting(tmp_path, monke
     assert _run(cfg) == 0
 
     err = capsys.readouterr().err
-    assert "README.md 的 custom 区看起来是英文" in err
-    assert "README.en.md 的 custom 区看起来是中文" in err
+    assert "README.md 的手写内容看起来是英文" in err
+    assert "README.en.md 的手写内容看起来是中文" in err
     text = summary.read_text(encoding="utf-8")
     assert "看起来是英文" in text and "看起来是中文" in text
     # 只提醒：手写内容逐字保留（不翻译、不改写）
@@ -911,10 +919,13 @@ def test_custom_region_language_mismatch_warns_without_rewriting(tmp_path, monke
 # ============================ 仓库描述写回（2026-10-25） ============================
 
 
-def _desc_cfg(tmp_path: Path, *, enabled: bool = True) -> Path:
+def _desc_cfg(
+    tmp_path: Path, *, enabled: bool = True, mode: str | None = None
+) -> Path:
     """repo_descriptions 场景配置：单语、无翻译干扰，只考察描述写回链路。"""
     cfg = tmp_path / "config.yaml"
     as_posix = lambda p: p.as_posix()  # noqa: E731
+    mode_line = f'  mode: "{mode}"\n' if mode else ""
     cfg.write_text(
         f"""
 github:
@@ -925,7 +936,7 @@ readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
   bilingual: false
-repo_descriptions:
+{mode_line}repo_descriptions:
   enabled: {"true" if enabled else "false"}
 snapshot:
   path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
@@ -1174,7 +1185,7 @@ def _takeover_ai(monkeypatch):
 
 def test_first_takeover_opens_pr_and_leaves_main_untouched(tmp_path, monkeypatch, capsys):
     """首次接管：一个 PR 装齐中英 README + 快照；本地 main 一个字节都不动。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
     before_en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
@@ -1210,7 +1221,7 @@ def test_takeover_skips_whole_round_while_pr_open(tmp_path, monkeypatch, capsys)
     """接管 PR 还开着：直接跳过（不重渲染、不调 AI、不开第二条 PR）。"""
     from fake_github import FakeResponse
 
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     http, client = _takeover_client(
         prs_first=[
@@ -1236,26 +1247,27 @@ def test_takeover_skips_whole_round_while_pr_open(tmp_path, monkeypatch, capsys)
     assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
 
 
-def test_takeover_without_pat_writes_directly_with_explicit_warning(
+def test_takeover_without_pat_skips_and_leaves_main_untouched(
     tmp_path, monkeypatch, capsys
 ):
-    """没有 WORKFLOW_PAT：保持直接写 main，但必须明确告知无法预览。"""
-    cfg = _write_config(tmp_path)
+    """没有 WORKFLOW_PAT：跳过本轮（main 零改动），并提示改用 auto 或配置 PAT。"""
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path, bilingual=False)
     _takeover_ai(monkeypatch)
 
     assert run(cfg, fixture=FIXTURES) == 0
     err = capsys.readouterr().err
-    assert "WORKFLOW_PAT" in err and "直接写入 main" in err
+    assert "WORKFLOW_PAT" in err and "main 未改动" in err
+    # 提示必须给出两条出路（默认 auto 或补 PAT），否则用户只知道失败
+    assert "readme.mode" in err and "auto" in err
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
-    assert "我手写的介绍，请完整保留" in readme  # 手写内容进 custom 区
-    assert "## 📊 统计信息" in readme  # 生成区照常落地
-    assert (tmp_path / "data" / "snapshot.json").exists()
+    assert readme == "# 我的主页\n\n我手写的介绍，请完整保留。\n\n## 联系我\n- email: me@example.com\n"
+    assert not (tmp_path / "data" / "snapshot.json").exists()
 
 
 def test_takeover_dry_run_prints_and_never_calls_github(tmp_path, monkeypatch, capsys):
     """dry-run 只打印渲染结果：不检测 PR、不推送、不写文件。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     http, client = _takeover_client()
     _takeover_ai(monkeypatch)
@@ -1279,6 +1291,7 @@ readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
   bilingual: false
+  mode: "full"
 snapshot:
   path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
 """,
@@ -1298,7 +1311,7 @@ snapshot:
 
 def test_takeover_uses_profile_repo_default_branch(tmp_path, monkeypatch, capsys):
     """profile 仓库被 config 排除时，PR base 仍取真实默认分支（不是硬编码 main）。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path, bilingual=False)
     http, client = _takeover_client(repo_default_branch="trunk")
     _takeover_ai(monkeypatch)
@@ -1312,7 +1325,7 @@ def test_takeover_uses_profile_repo_default_branch(tmp_path, monkeypatch, capsys
 
 def test_after_takeover_pr_merged_next_round_is_noop(tmp_path, monkeypatch, capsys):
     """PR 合并后的下一轮：盘上已是机器 README + 新快照 → 正常增量门直接 no-op。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     http, client = _takeover_client()
     _takeover_ai(monkeypatch)
@@ -1345,7 +1358,7 @@ def test_takeover_force_refreshes_open_pr_and_stays_off_main(
     from fake_github import FakeResponse
     from profile_agent.github_client import API
 
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
     http, client = _takeover_client(prs_first=[_open_pr_response()] * 2)
@@ -1373,7 +1386,7 @@ def test_takeover_force_refresh_failure_never_writes_main(
     tmp_path, monkeypatch, capsys
 ):
     """刷新失败也不能绕过待审核的 PR 去写 main：只警告，下一轮重试。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path)
     before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
     http, client = _takeover_client(prs_first=[_open_pr_response()] * 2, blob_ok=False)
@@ -1389,7 +1402,7 @@ def test_takeover_force_refresh_failure_never_writes_main(
 
 def test_takeover_push_failure_never_writes_main(tmp_path, monkeypatch, capsys):
     """推送/开 PR 阶段失败（分支可能已推出去）：绝不回退写 main。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path, bilingual=False)
     http, client = _takeover_client(blob_ok=False)
     _takeover_ai(monkeypatch)
@@ -1401,25 +1414,26 @@ def test_takeover_push_failure_never_writes_main(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
 
 
-def test_takeover_head_read_failure_falls_back_to_direct_write(
-    tmp_path, monkeypatch, capsys
-):
-    """连 HEAD 都读不到（什么都没推出去）：回退直接写 main 仍是安全的。"""
-    cfg = _write_config(tmp_path)
+def test_takeover_head_read_failure_skips_round(tmp_path, monkeypatch, capsys):
+    """读不到 HEAD 就无法建分支：跳过本轮、main 零改动，下一轮自动重试。"""
+    cfg = _write_config(tmp_path, mode="full")
     _handwritten(tmp_path, bilingual=False)
     http, client = _takeover_client(with_commit_head=False)
     _takeover_ai(monkeypatch)
 
     assert run(cfg, fixture=FIXTURES, b_client=client) == 0
     err = capsys.readouterr().err
-    assert "回退直接写入 main" in err
-    assert (tmp_path / "data" / "snapshot.json").exists()
-    assert "我手写的介绍" in (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "无法读取主页仓库 HEAD" in err and "本轮跳过" in err
+    assert "main 未改动" in err
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
+    # 什么都没推出去：不得有 blob/tree/commit/PR 写入请求
+    assert not any(r["method"] != "GET" for r in http.requests)
 
 
 def test_takeover_opens_gate_even_when_fingerprint_unchanged(tmp_path, monkeypatch):
     """指纹完全没变也必须开门：否则第二次运行会 no-op，接管 PR 永远开不出来。"""
-    cfg = _write_config(tmp_path)
+    cfg = _write_config(tmp_path, mode="full")
     _takeover_ai(monkeypatch)
     assert run(cfg, fixture=FIXTURES) == 0  # 正常首跑：机器 README + 快照
     (tmp_path / "README.md").write_text(
@@ -1437,7 +1451,7 @@ def test_takeover_opens_gate_even_when_fingerprint_unchanged(tmp_path, monkeypat
 def test_after_takeover_merged_data_change_updates_normally(tmp_path, monkeypatch):
     """合并后数据变化：不再走接管分支，按普通增量更新本地 README。"""
     fx = _copy_fixture(tmp_path)
-    cfg = _desc_cfg(tmp_path, enabled=False)
+    cfg = _desc_cfg(tmp_path, enabled=False, mode="full")
     _handwritten(tmp_path, bilingual=False)
     http, client = _takeover_client()
     _takeover_ai(monkeypatch)
@@ -1515,3 +1529,316 @@ def test_description_unchanged_then_next_round_is_noop(tmp_path, monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("无需改动后不应再调 AI")),
     )
     assert run(cfg, fixture=fx, b_client=client) == 0
+
+
+# ======================= 手写 README 默认只加一个托管块（auto） =======================
+
+_EMBED_START = "<!-- profile-agent:readme:start -->"
+_EMBED_END = "<!-- profile-agent:readme:end -->"
+
+# 覆盖常见「精美 README」元素：居中 HTML、图片、引用、<details>、代码围栏假标题
+_RICH_README = (
+    '<p align="center"><img src="banner.png" width="100%"></p>\n'
+    "\n"
+    "# Alice Chen\n"
+    "\n"
+    "> 手写一句话介绍\n"
+    "\n"
+    "<details><summary>关于我</summary>\n"
+    "\n"
+    "```bash\n"
+    "# 这不是标题\n"
+    "```\n"
+    "\n"
+    "</details>\n"
+    "\n"
+    "## 联系我\n"
+    "- email: me@example.com\n"
+)
+
+
+def _embed_ai(monkeypatch, *, zh: str = "简介", en: str = "Bio"):
+    import profile_agent.cli as cli_mod
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: (zh, en, True))
+    monkeypatch.setattr(
+        cli_mod, "translate_descriptions", lambda items, cfg, **kw: ({}, "")
+    )
+    return cli_mod
+
+
+def test_auto_embed_inserts_block_after_h1_and_preserves_everything(
+    tmp_path, monkeypatch
+):
+    """手写页默认 auto：标题后多一个 AI 简介块，块外逐字节不变、不出现统计/置顶/pin。"""
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    (tmp_path / "README.md").write_text(_RICH_README, encoding="utf-8")
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES) == 0
+
+    out = (tmp_path / "README.md").read_text(encoding="utf-8")
+    block = f"{_EMBED_START}\n## 🤖 AI 简介\n\n简介\n{_EMBED_END}\n"
+    assert out == _RICH_README.replace("# Alice Chen\n", "# Alice Chen\n\n" + block, 1)
+    # 只含简介：整页接管才有的东西一个都不能出现，Pinned 更不会被重新展示
+    for word in ("统计信息", "置顶项目", "仓库列表", "📌"):
+        assert word not in out
+
+
+def test_auto_embed_second_run_with_same_bio_is_noop(tmp_path, monkeypatch, capsys):
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    (tmp_path / "README.md").write_text(_RICH_README, encoding="utf-8")
+    _embed_ai(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0
+    first = (tmp_path / "README.md").read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert "无变化，跳过更新" in capsys.readouterr().out
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == first
+
+
+def test_auto_embed_bio_change_updates_only_inside_block(tmp_path, monkeypatch):
+    fx = _copy_fixture(tmp_path)
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    (tmp_path / "README.md").write_text(_RICH_README, encoding="utf-8")
+    _embed_ai(monkeypatch)
+    assert run(cfg, fixture=fx) == 0
+    first = (tmp_path / "README.md").read_text(encoding="utf-8")
+    i, j = first.index(_EMBED_START), first.index(_EMBED_END) + len(_EMBED_END)
+    prefix, suffix = first[:i], first[j:]
+
+    _bump_fixture(fx, "alice/cool-tool", pushed="2026-11-01T00:00:00+00:00")
+    _embed_ai(monkeypatch, zh="更新后的简介")
+    assert run(cfg, fixture=fx) == 0
+
+    second = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "## 🤖 AI 简介\n\n更新后的简介" in second
+    assert second[: second.index(_EMBED_START)] == prefix
+    assert second[second.index(_EMBED_END) + len(_EMBED_END) :] == suffix
+
+
+def test_auto_embed_without_ai_key_leaves_file_untouched(tmp_path, capsys):
+    """没有 AI key：不插空块、文件一字节不改；配好 key 后自动补上。"""
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    (tmp_path / "README.md").write_text(_RICH_README, encoding="utf-8")
+
+    assert _run(cfg) == 0
+
+    assert "还没有可用的 AI 简介" in capsys.readouterr().err
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == _RICH_README
+
+
+def test_auto_embed_reinserts_after_user_deletes_block(tmp_path, monkeypatch, capsys):
+    """块被删（含整段删除）→ 下一轮重新插入：与「删除会恢复」的承诺一致。"""
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    (tmp_path / "README.md").write_text(_RICH_README, encoding="utf-8")
+    _embed_ai(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0
+    out = (tmp_path / "README.md").read_text(encoding="utf-8")
+    removed = out.replace(
+        f"{_EMBED_START}\n## 🤖 AI 简介\n\n简介\n{_EMBED_END}\n", "", 1
+    )
+    assert removed != out
+    (tmp_path / "README.md").write_text(removed, encoding="utf-8")
+    capsys.readouterr()
+
+    assert run(cfg, fixture=FIXTURES) == 0
+    again = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "## 🤖 AI 简介\n\n简介" in again
+    assert again.startswith('<p align="center">')
+    assert again.rstrip().endswith("- email: me@example.com")
+
+
+def test_auto_embed_broken_block_markers_are_skipped(tmp_path, monkeypatch, capsys):
+    """块 marker 缺一半：跳过该文件 + 警告，绝不猜修复、绝不覆盖原文。"""
+    cfg = _write_config(tmp_path, mode="auto", bilingual=False)
+    original = f"# Alice\n\n{_EMBED_START}\n旧块没有结束标记\n"
+    (tmp_path / "README.md").write_text(original, encoding="utf-8")
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES) == 0
+
+    assert "marker 不平衡" in capsys.readouterr().err
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == original
+
+
+def test_auto_embed_bilingual_inserts_language_specific_blocks(
+    tmp_path, monkeypatch
+):
+    cfg = _write_config(tmp_path, mode="auto")  # bilingual 默认 true
+    _handwritten(tmp_path)
+    _embed_ai(monkeypatch, zh="中文简介", en="English bio")
+
+    assert run(cfg, fixture=FIXTURES) == 0
+
+    zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "## 🤖 AI 简介\n\n中文简介" in zh
+    assert "## 🤖 AI Bio\n\nEnglish bio" in en
+    assert zh.startswith("# 我的主页") and en.startswith("# My Profile")
+
+
+def test_auto_embed_bilingual_missing_en_file_is_not_created(tmp_path, monkeypatch):
+    cfg = _write_config(tmp_path, mode="auto")
+    _handwritten(tmp_path, bilingual=False)
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES) == 0
+
+    assert "## 🤖 AI 简介" in (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert not (tmp_path / "README.en.md").exists()
+
+
+def test_auto_embed_mixed_pair_leaves_machine_file_alone(
+    tmp_path, monkeypatch, capsys
+):
+    """zh 手写 + en 是旧机器页：只动 zh，en 原样保留并说明原因。"""
+    cfg = _write_config(tmp_path, mode="auto")
+    _handwritten(tmp_path, bilingual=False)
+    machine_en = (
+        "<!-- profile-agent 模板说明：机器生成页 -->\n# Machine Page\n\n旧生成内容\n"
+    )
+    (tmp_path / "README.en.md").write_text(machine_en, encoding="utf-8")
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES) == 0
+
+    assert "## 🤖 AI 简介" in (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert (tmp_path / "README.en.md").read_text(encoding="utf-8") == machine_en
+    assert "README.en.md 不是手写文件" in capsys.readouterr().err
+
+
+def test_auto_embed_dry_run_prints_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    cfg = _write_config(tmp_path, mode="auto")
+    _handwritten(tmp_path)
+    http, client = _takeover_client()
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert _EMBED_START in out and "# 我的主页" in out
+    assert http.requests == []
+    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
+    assert _EMBED_START not in (tmp_path / "README.en.md").read_text(encoding="utf-8")
+
+
+def test_auto_skips_when_old_takeover_pr_is_still_open(
+    tmp_path, monkeypatch, capsys
+):
+    """从 full 切到 auto 但旧接管 PR 还开着：跳过本轮，避免日后合并旧 PR 覆盖排版。"""
+    cfg = _write_config(tmp_path, bilingual=False)  # 默认 auto
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client(prs_first=[_open_pr_response()])
+    _embed_ai(monkeypatch)
+    before = (tmp_path / "README.md").read_text(encoding="utf-8")
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+
+    err = capsys.readouterr().err
+    assert "旧的整页接管 PR" in err and "readme.mode" in err
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == before
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+    assert not any(r["url"].endswith("/git/blobs") for r in http.requests)
+
+
+def test_auto_to_full_strips_old_embed_block_from_custom(tmp_path, monkeypatch):
+    """auto → full 迁移：旧简介块从 custom 区剥掉，不在成品页里重复出现。"""
+    cfg = _write_config(tmp_path, mode="full", bilingual=False)
+    (tmp_path / "README.md").write_text(
+        "# Alice\n\n手写内容\n\n"
+        f"{_EMBED_START}\n## 🤖 AI 简介\n\n旧简介\n{_EMBED_END}\n",
+        encoding="utf-8",
+    )
+    http, client = _takeover_client()
+    _embed_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+
+    blobs = [r for r in http.requests if r["url"].endswith("/git/blobs")]
+    content = blobs[0]["json"]["content"]
+    assert "手写内容" in content
+    assert "旧简介" not in content
+    assert _EMBED_START not in content
+    assert "统计信息" in content  # full 照常整页接管
+
+
+def test_full_mode_broken_custom_markers_never_overwrite_original(
+    tmp_path, capsys
+):
+    """custom 锚点损坏（半截）：跳过写入，原文逐字节保留。"""
+    cfg = _write_config(tmp_path, mode="full", bilingual=False)
+    original = "# 手写\n\n<!-- profile-agent:custom:start -->\n没有结束标记\n"
+    (tmp_path / "README.md").write_text(original, encoding="utf-8")
+
+    assert _run(cfg) == 0
+
+    assert "marker 损坏" in capsys.readouterr().err
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == original
+
+
+# ---- 可复用 workflow：默认模板回退（PROFILE_AGENT_HOME） ----
+
+TOOL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_min_config(tmp_path: Path, template: str = "templates/profile.md.j2") -> Path:
+    """只写渲染必需的配置：模板路径保持相对（模拟调用方只有 config + README）。"""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"""
+github:
+  username: "alice"
+readme:
+  path: "{(tmp_path / 'README.md').as_posix()}"
+  template: "{template}"
+snapshot:
+  path: "{(tmp_path / 'data' / 'snapshot.json').as_posix()}"
+""",
+        encoding="utf-8",
+    )
+    return cfg
+
+
+def test_default_template_falls_back_to_tool_home(tmp_path, monkeypatch, capsys):
+    """调用方没有 templates/：用 PROFILE_AGENT_HOME 指向的工具模板，渲染成功。"""
+    monkeypatch.setenv("PROFILE_AGENT_HOME", str(TOOL_ROOT))
+    cfg = _write_min_config(tmp_path)
+
+    assert _run(cfg, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert "统计信息" in out
+    assert not (tmp_path / "templates").exists()
+
+
+def test_default_template_prefers_tool_home_over_stale_local_copy(
+    tmp_path, monkeypatch, capsys
+):
+    """默认模板路径跟随上游：副本里的旧模板不会悄悄生效。"""
+    monkeypatch.setenv("PROFILE_AGENT_HOME", str(TOOL_ROOT))
+    local = tmp_path / "templates" / "profile.md.j2"
+    local.parent.mkdir()
+    local.write_text("LOCAL-OLD-TEMPLATE", encoding="utf-8")
+    cfg = _write_min_config(tmp_path)
+
+    assert _run(cfg, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert "统计信息" in out
+    assert "LOCAL-OLD-TEMPLATE" not in out
+
+
+def test_custom_template_path_always_uses_local_file(tmp_path, monkeypatch, capsys):
+    """自定义模板路径（非默认）永远以本地配置为准。"""
+    monkeypatch.setenv("PROFILE_AGENT_HOME", str(TOOL_ROOT))
+    (tmp_path / "my.md.j2").write_text("CUSTOM-TEMPLATE-MARKER", encoding="utf-8")
+    cfg = _write_min_config(tmp_path, template="my.md.j2")
+
+    assert _run(cfg, dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert "CUSTOM-TEMPLATE-MARKER" in out
+    assert "统计信息" not in out
