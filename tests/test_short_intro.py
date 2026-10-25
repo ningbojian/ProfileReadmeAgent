@@ -75,7 +75,7 @@ def test_hash_stable_and_changes_with_readme_or_version():
 
 def test_generate_returns_clean_text():
     client = FakeClient(["命令行密码生成器，支持自定义字符集。"])
-    text = generate_short_intro(REPO, AIConfig(model="m"), client=client, readme=README)
+    text, _en = generate_short_intro(REPO, AIConfig(model="m"), client=client, readme=README)
     assert text == "命令行密码生成器，支持自定义字符集。"
     assert "密码生成器" in client.calls[0]["messages"][0]["content"]
 
@@ -98,5 +98,26 @@ def test_generate_empty_raises():
 
 def test_generate_truncates_very_long_output():
     client = FakeClient(["很长的介绍。" + "字" * 200])
-    text = generate_short_intro(REPO, AIConfig(), client=client, readme=README)
+    text, _en = generate_short_intro(REPO, AIConfig(), client=client, readme=README)
     assert len(text) <= 80
+
+
+# ============================ WP4 双语补位（2026-10-23） ============================
+
+
+def test_generate_dual_language_json_contract():
+    """双语默认开：单次调用 JSON {zh,en} → (zh, en)，prompt 含 JSON 契约。"""
+    raw = '{"zh": "命令行密码生成器。", "en": "Command-line password generator."}'
+    client = FakeClient([raw])
+    zh, en = generate_short_intro(REPO, AIConfig(model="m"), client=client, readme=README)
+    assert zh == "命令行密码生成器。"
+    assert en == "Command-line password generator."
+    assert "JSON" in client.calls[0]["messages"][0]["content"]
+
+
+def test_generate_parse_failure_falls_back_zh_only():
+    """模型不按 JSON 输出 → 降级单语 (清洗后原文, "")，任务不失败。"""
+    client = FakeClient(["命令行密码生成器，支持自定义字符集。"])
+    zh, en = generate_short_intro(REPO, AIConfig(model="m"), client=client, readme=README)
+    assert zh == "命令行密码生成器，支持自定义字符集。"
+    assert en == ""

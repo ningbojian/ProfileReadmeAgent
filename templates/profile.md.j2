@@ -1,100 +1,108 @@
-<!-- 此 README 由 profile-agent 自动生成，请勿手动修改。
-     配置见 config.yaml，使用指南见 docs/guide.md -->
+<!-- {{ L.header_a }}
+     {{ L.header_b }} -->
+{{ switch_line }}
 
-# 👋 你好，我是 {{ display_name or username }}
+{{ L.greeting }} {{ display_name or username }}
 
+{% if sections.bio %}
 {% if bio_text %}
 {{ bio_text }}
 {% else %}
-<!-- AI 简介暂不可用：配置 {{ key_env }} 后运行 profile-agent 即可生成 -->
+<!-- {{ bio_placeholder }} -->
+{% endif %}
 {% endif %}
 
-{% if cards_show %}
-<p align="center">
-{% if "stats" in cards_show %}
-  <img src="https://github-readme-stats.vercel.app/api?username={{ username }}&amp;theme={{ cards_theme }}&amp;show_icons=true&amp;hide_border=true" alt="GitHub 统计卡片" />
-{% endif %}
-{% if "top_langs" in cards_show %}
-  <img src="https://github-readme-stats.vercel.app/api/top-langs/?username={{ username }}&amp;layout=compact&amp;theme={{ cards_theme }}&amp;hide_border=true" alt="语言分布卡片" />
-{% endif %}
-{% if "streak" in cards_show %}
-  <img src="https://streak-stats.demolab.com/?user={{ username }}&amp;theme={{ cards_theme }}&amp;hide_border=true" alt="连续贡献卡片" />
-{% endif %}
-</p>
-{% endif %}
-
-{% if visitors_badge %}
-<p align="center">
-  <img src="https://komarev.com/ghpvc/?username={{ username }}" alt="主页访问计数" />
-</p>
-{% endif %}
-
-## 📊 仓库统计
-
-| 指标 | 数值 |
-| --- | --- |
-| 公开仓库 | {{ totals.public_repos }} |
-| Followers | {{ totals.followers }} |
-| 总 Star | {{ totals.total_stars }} |
-
-{% if totals.top_languages %}
-**主要语言**：
-{% for lang, stars in totals.top_languages[:5] %}
-`{{ lang }}`（{{ stars }}★）{{ " · " if not loop.last else "" }}
-{% endfor %}
-{% endif %}
-
-## 🌟 我的项目
-
-{% set ns = namespace(bigs=[], rests=[]) %}
-{% for repo in featured %}
-{% if (repo.description or short_intros.get(repo.full_name, "")) and ns.bigs | length < 3 %}
-{% set _ = ns.bigs.append(repo) %}
-{% else %}
-{% set _ = ns.rests.append(repo) %}
-{% endif %}
-{% endfor %}
-{% if not featured %}
-<!-- 暂无符合条件的项目 -->
-{% endif %}
-{% if ns.bigs %}
-<table>
-{% for repo in ns.bigs %}
-  <tr>
-    <td align="center" valign="top">
-      <h3><a href="{{ repo.html_url }}">{{ lang_emoji(repo.language) }} {{ repo.name }}</a></h3>
-      <p>{{ repo.description or short_intros.get(repo.full_name, "") or "（暂无描述）" }}</p>
-      <p>{{ lang_badge(repo.language) }} {{ stars_badge(repo.full_name) }} {{ forks_badge(repo.full_name) }} {{ push_badge(repo.pushed_at) }}</p>
-{% if repo.topics %}
-      <p>{% for t in repo.topics[:5] %}<code>#{{ t }}</code> {% endfor %}</p>
-{% endif %}
-    </td>
-  </tr>
-{% endfor %}
-</table>
-{% endif %}
-{% if ns.rests %}
-<table>
-{% for row in ns.rests | batch(2) %}
-  <tr>
-{% for repo in row %}
-    <td align="center" valign="top" width="50%">
-      <a href="{{ repo.html_url }}"><b>{{ lang_emoji(repo.language) }} {{ repo.name }}</b></a><br>
-      {{ repo.description or short_intros.get(repo.full_name, "") or "（暂无描述）" }}<br>
-      {{ lang_badge(repo.language) }} {{ stars_badge(repo.full_name) }} {{ push_badge(repo.pushed_at) }}{% if repo.topics %}<br>
-      {% for t in repo.topics[:5] %}<code>#{{ t }}</code> {% endfor %}{% endif %}
-    </td>
-{% endfor %}
-{% if row | length == 1 %}
-    <td align="center" valign="top" width="50%"></td>
-{% endif %}
-  </tr>
-{% endfor %}
-</table>
-{% endif %}
-
-{% if include_update_time %}
+{% if sections.stats %}
 ---
 
-> ⏱️ 本页面由机器人于 {{ updated_at }} 自动更新
+{{ L.stats_title }}
+
+{{ stat_badge(L.public_repos, totals.public_repos) }} {{ stat_badge("Followers", totals.followers) }} {{ stat_badge(L.total_stars, totals.total_stars) }}
+{% if cards_show %}
+
+<p align="center">
+{% if "stats" in cards_show %}
+  <img src="https://github-readme-stats.vercel.app/api?username={{ username }}&amp;theme={{ cards_theme }}&amp;show_icons=true&amp;hide_border=true" alt="{{ L.alt_stats }}" />
 {% endif %}
+{% if "top_langs" in cards_show %}
+  <img src="https://github-readme-stats.vercel.app/api/top-langs/?username={{ username }}&amp;layout=compact&amp;theme={{ cards_theme }}&amp;hide_border=true" alt="{{ L.alt_langs }}" />
+{% endif %}
+{% if "streak" in cards_show %}
+  <img src="https://streak-stats.demolab.com/?user={{ username }}&amp;theme={{ cards_theme }}&amp;hide_border=true" alt="{{ L.alt_streak }}" />
+{% endif %}
+</p>
+{% endif %}
+{% if totals.top_languages %}
+
+---
+
+{{ L.tags_title }}
+
+{% for lang, stars in totals.top_languages[:8] %}{{ lang_star_badge(lang, stars) }}{{ " " if not loop.last }}{% endfor %}
+
+{% endif %}
+{% endif %}
+{% set show_pinned = pinned if sections.pinned else [] %}
+{% set pinned_names = show_pinned | map(attribute="full_name") | list %}
+{% set ns = namespace(rest=[]) %}{% for repo in featured %}{% if repo.full_name not in pinned_names %}{% set _ = ns.rest.append(repo) %}{% endif %}{% endfor %}
+{% if show_pinned %}
+
+---
+
+{{ L.pinned_title }}
+
+{% for repo in show_pinned %}
+### ⭐ [{{ repo.name }}]({{ repo.html_url }})
+
+{{ [lang_badge(repo.language), stars_badge(repo.full_name), forks_badge(repo.full_name), push_badge(repo.pushed_at)] | reject("equalto", "") | join(" ") }}
+{% set desc = display_descs.get(repo.full_name) or repo.description or short_intros.get(repo.full_name, "") %}{% if desc %}
+
+> {{ desc }}
+{% endif %}
+{% if repo.topics %}
+
+{% for t in repo.topics[:3] %}- {{ t }}
+{% endfor %}
+{% endif %}
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if sections.table %}
+{% if ns.rest %}
+
+---
+
+{{ L.repos_title }}
+
+| {{ L.th_repo }} | {{ L.th_desc }} | Stars | {{ L.th_lang }} |
+| --- | --- | --- | --- |
+{% for repo in ns.rest %}| [{{ repo.name }}]({{ repo.html_url }}) | {{ (display_descs.get(repo.full_name) or repo.description or short_intros.get(repo.full_name, "") or "—").replace("|", " \\| ").replace("\n", " ") }} | {{ repo.stars }} | {{ lang_badge(repo.language) }} |
+{% endfor %}
+{% elif not show_pinned %}
+
+---
+
+{{ L.repos_title }}
+
+<!-- {{ L.no_repos }} -->
+{% endif %}
+{% endif %}
+
+---
+
+{{ L.notes_title }}
+
+> [!NOTE]
+> {{ L.note_prefix }}{% if include_update_time %}{{ L.note_at }}{{ updated_at }}{{ L.note_tz }}{% endif %}{{ L.note_suffix }}
+{% if visitors_badge %}
+
+![{{ L.alt_visitors }}](https://komarev.com/ghpvc/?username={{ username }})
+{% endif %}
+
+<!-- profile-agent:custom:start -->
+{% if custom_text %}
+{{ custom_text }}
+{% endif %}
+<!-- profile-agent:custom:end -->

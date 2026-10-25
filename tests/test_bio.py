@@ -1,5 +1,6 @@
 """bio.py 提示词构建与生成逻辑测试（假 client，无网络）。"""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +46,9 @@ def test_build_prompt_contains_zh_instructions_and_repos():
     assert "简体中文" in prompt
     assert str(cfg.bio_min_chars) in prompt
     assert str(cfg.bio_max_chars) in prompt
-    assert "亮点" in prompt
+    # 有意变更（2026-10-24 视觉）：简介末尾的「亮点：」要点与下方置顶项目/仓库列表
+    # 重复，已从 prompt 移除——简介只留一段自然文字，项目信息交给列表
+    assert "亮点" not in prompt
     assert "cool-tool" in prompt
     assert "网页应用" in prompt
     assert "128" in prompt  # followers 注入
@@ -54,7 +57,7 @@ def test_build_prompt_contains_zh_instructions_and_repos():
 def test_generate_reuses_existing_recent_bio():
     cfg = AIConfig()
     client = FakeClient([_block("不应被调用")])
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD,
         cfg,
         input_hash="sha256:whatever",
@@ -76,7 +79,7 @@ def test_generate_joins_text_blocks_and_strips_quotes():
             _block("第二段亮点。"),
         ]
     )
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD,
         AIConfig(model="claude-opus-5-5"),
         input_hash="sha256:new",
@@ -94,7 +97,7 @@ def test_generate_joins_text_blocks_and_strips_quotes():
 
 def test_generate_api_error_falls_back_to_previous():
     client = FakeClient([], raise_exc=RuntimeError("api down"))
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD,
         AIConfig(),
         input_hash="sha256:new",
@@ -109,7 +112,7 @@ def test_generate_api_error_falls_back_to_previous():
 
 def test_generate_empty_response_falls_back_to_previous():
     client = FakeClient([_block("")])
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD,
         AIConfig(),
         input_hash="sha256:new",
@@ -159,7 +162,7 @@ def test_openai_provider_chat(monkeypatch):
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     cfg = AIConfig(provider="openai", base_url="https://api.deepseek.com", key_env="DEEPSEEK_API_KEY", model="deepseek-chat")
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD, cfg,
         input_hash="h1", prev_hash="", prev_text="", prev_generated_at="",
         http_post=fake_post,
@@ -177,7 +180,7 @@ def test_openai_provider_chat(monkeypatch):
 def test_openai_provider_reuses_fresh_bio_without_http(monkeypatch):
     called = []
     cfg = AIConfig(provider="openai", base_url="http://x", key_env="K")
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD, cfg,
         input_hash="same", prev_hash="same", prev_text="旧简介",
         prev_generated_at="2099-01-01T00:00:00+00:00",
@@ -216,7 +219,7 @@ def test_anthropic_custom_base_url_and_key_env(monkeypatch):
         key_env="AI_API_KEY",
         model="mimo-v2.6-flash",
     )
-    text, generated = generate_bio(
+    text, _en, generated = generate_bio(
         PAYLOAD, cfg,
         input_hash="h", prev_hash="", prev_text="", prev_generated_at="",
     )
@@ -224,3 +227,129 @@ def test_anthropic_custom_base_url_and_key_env(monkeypatch):
     assert captured["init"]["base_url"] == "https://api.xiaomimimo.com/anthropic"
     assert captured["init"]["api_key"] == "mimo-key"
     assert captured["create"]["model"] == "mimo-v2.6-flash"
+
+
+# ============================ WP4 双语 AI（2026-10-23） ============================
+
+
+def test_generate_bio_dual_language_single_call():
+    """双语默认开：单次调用要求输出 JSON {zh,en}，两个语种一次拿回（≈1.3× 成本而非 2×）。"""
+    cfg = AIConfig()
+    payload = {**PAYLOAD, "bilingual": True}
+    raw = (
+        '{"zh": "中文简介。亮点：\\n- 开源工具作者",'
+        ' "en": "English bio. Highlights:\\n- Open-source author"}'
+    )
+    client = FakeClient([_block(raw)])
+    zh, en, generated = generate_bio(
+        payload,
+        cfg,
+        input_hash="sha256:x",
+        prev_hash="",
+        prev_text="",
+        prev_generated_at="",
+        client=client,
+    )
+    assert generated is True
+    assert zh.startswith("中文简介")
+    assert en.startswith("English bio")
+    assert len(client.calls) == 1  # 单次调用拿双语
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert "简体中文" in prompt  # 既有语言要求字样保留（测试锁）
+    assert "JSON" in prompt and '"zh"' in prompt
+
+
+def test_bio_json_parse_failure_falls_back_zh_only():
+    """模型没按 JSON 输出 → 整段降级单语：清洗后原文当 zh、en 置空（宁可单语不可失败）。"""
+    cfg = AIConfig()
+    client = FakeClient([_block("一段普通中文简介，没有 JSON。")])
+    zh, en, generated = generate_bio(
+        PAYLOAD,
+        cfg,
+        input_hash="sha256:x",
+        prev_hash="",
+        prev_text="",
+        prev_generated_at="",
+        client=client,
+    )
+    assert generated is True
+    assert zh == "一段普通中文简介，没有 JSON。"
+    assert en == ""
+
+
+def test_generate_bio_reuse_returns_prev_en():
+    """复用路径同时带回英文：输入未变且新鲜 → (prev_zh, prev_en, False)，零调用。"""
+    cfg = AIConfig()
+    client = FakeClient([_block("不应被调用")])
+    zh, en, generated = generate_bio(
+        PAYLOAD,
+        cfg,
+        input_hash="sha256:same",
+        prev_hash="sha256:same",
+        prev_text="旧中文简介",
+        prev_text_en="Old English bio",
+        prev_generated_at="2099-01-01T00:00:00+00:00",  # 尚未过期
+    )
+    assert (zh, en, generated) == ("旧中文简介", "Old English bio", False)
+    assert client.calls == []
+
+
+def test_bio_hash_stable_under_pin_reorder():
+    """成本护栏：置顶顺序调整（同一批仓库）不改变 bio 输入指纹 → 不重新生成简介。"""
+    from profile_agent.aggregate import bio_input_hash
+
+    cfg = AIConfig()
+    h1 = bio_input_hash(PAYLOAD, cfg)
+    reordered = {**PAYLOAD, "repos": list(reversed(PAYLOAD["repos"]))}
+    assert bio_input_hash(reordered, cfg) == h1
+
+
+def test_bio_hash_changes_when_bilingual_flips():
+    """bilingual 入指纹：单语↔双语切换触发一次重新生成（迁移时每用户一次，计划已明示）。"""
+    from profile_agent.aggregate import bio_input_hash
+
+    cfg = AIConfig()
+    h_on = bio_input_hash({**PAYLOAD, "bilingual": True}, cfg)
+    h_off = bio_input_hash({**PAYLOAD, "bilingual": False}, cfg)
+    assert h_on != h_off
+
+
+def test_bio_english_with_chinese_is_discarded(capsys):
+    """AI 的英文简介整段写成中文 → 丢弃 en（zh 照常），下一轮 bio_fresh 会重试。"""
+    raw = '{"zh": "中文简介正文。", "en": "这是用中文写成的英文简介，整段都该被丢弃。"}'
+    client = FakeClient([_block(raw)])
+    zh, en, generated = generate_bio(
+        PAYLOAD,
+        AIConfig(),
+        input_hash="sha256:x",
+        prev_hash="",
+        prev_text="",
+        prev_generated_at="",
+        client=client,
+    )
+    assert generated is True
+    assert zh.startswith("中文简介")
+    assert en == ""
+    assert "英文版" in capsys.readouterr().err
+
+
+def test_bio_english_with_a_chinese_section_is_discarded(capsys):
+    """英文简介里夹着成段中文（约三成汉字）同样丢弃：AI 输出阈值 0.20 更严。"""
+    en = (
+        "A small tool that turns notes into slides "
+        "用来整理笔记并导出为演示文稿，支持批量处理。"
+    )
+    raw = json.dumps({"zh": "中文简介正文。", "en": en}, ensure_ascii=False)
+    client = FakeClient([_block(raw)])
+    zh, got_en, generated = generate_bio(
+        PAYLOAD,
+        AIConfig(),
+        input_hash="sha256:x",
+        prev_hash="",
+        prev_text="",
+        prev_generated_at="",
+        client=client,
+    )
+    assert generated is True
+    assert got_en == ""
+    assert "英文版" in capsys.readouterr().err

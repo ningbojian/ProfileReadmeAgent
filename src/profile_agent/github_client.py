@@ -6,6 +6,7 @@ import base64
 import re
 import time
 from typing import Callable
+from urllib.parse import quote
 
 import requests
 
@@ -34,6 +35,37 @@ class GitHubClient:
         self._sleep = sleep
         self._max_retries = max_retries
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        payload: dict | None = None,
+        *,
+        allow_404: bool = False,
+        ok_status: tuple[int, ...] = (200,),
+    ) -> tuple[dict | list | None, dict]:
+        """通用请求（GET/POST/PATCH…），复用同一套重试与中文错误语义。"""
+        for attempt in range(self._max_retries + 1):
+            resp = self._session.request(
+                method, url, headers=self._headers, json=payload, timeout=30
+            )
+            if resp.status_code in ok_status:
+                return resp.json(), resp.headers
+            if resp.status_code in (403, 429) and resp.headers.get("X-RateLimit-Remaining") == "0":
+                reset = resp.headers.get("X-RateLimit-Reset", "未知")
+                raise GitHubError(
+                    f"GitHub API 限流（速率已达上限），重置时间戳：{reset}，请稍后再试"
+                )
+            if resp.status_code == 404:
+                if allow_404:
+                    return None, resp.headers
+                raise GitHubError("GitHub API 返回 404：用户不存在或仓库不可见")
+            if resp.status_code >= 500 and attempt < self._max_retries:
+                self._sleep(0.5 * (attempt + 1))
+                continue
+            raise GitHubError(f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}")
+        raise GitHubError("GitHub API 请求失败：重试次数已用尽")
+
     def _get(self, url: str, *, allow_404: bool = False) -> tuple[dict | list | None, dict]:
         for attempt in range(self._max_retries + 1):
             resp = self._session.get(url, headers=self._headers, timeout=30)
@@ -54,6 +86,26 @@ class GitHubClient:
             raise GitHubError(f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}")
         raise GitHubError("GitHub API 请求失败：重试次数已用尽")
 
+    def _post(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        allow_404: bool = False,
+        ok_status: tuple[int, ...] = (201,),
+    ) -> tuple[dict | list | None, dict]:
+        return self._request("POST", url, payload, allow_404=allow_404, ok_status=ok_status)
+
+    def _patch(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        allow_404: bool = False,
+        ok_status: tuple[int, ...] = (200,),
+    ) -> tuple[dict | list | None, dict]:
+        return self._request("PATCH", url, payload, allow_404=allow_404, ok_status=ok_status)
+
     def get_user(self, username: str) -> dict:
         data, _ = self._get(f"{API}/users/{username}")
         assert isinstance(data, dict)
@@ -71,10 +123,52 @@ class GitHubClient:
             url = match.group(1) if match else None
         return repos
 
-    def get_repo_readme(self, full_name: str) -> str:
-        """读取仓库 README 文本；无 README 或读取失败时返回空串（不报错）。"""
+    def get_pinned_repos(self, username: str) -> list[str] | None:
+        """读取用户个人主页原生 Pinned 仓库（GraphQL，官方顺序，最多 6 个）。
+
+        返回 nameWithOwner 列表；用户清空置顶时返回 []（成功语义）。
+        失败一律返回 None（无 token / 网络异常 / GraphQL 语义错误），绝不抛错——
+        调用方据此回退快照或配置，避免置顶闪断。REST 无此接口，仅 GraphQL 提供。
+        """
+        if "Authorization" not in self._headers:
+            return None  # GraphQL 必须认证，匿名直接放弃（零网络开销）
+        query = (
+            "query($login: String!) { user(login: $login) { "
+            "pinnedItems(first: 6, types: REPOSITORY) { "
+            "nodes { ... on Repository { nameWithOwner } } } } }"
+        )
         try:
-            data, _ = self._get(f"{API}/repos/{full_name}/readme", allow_404=True)
+            data, _ = self._request(
+                "POST",
+                f"{API}/graphql",
+                {"query": query, "variables": {"login": username}},
+                ok_status=(200,),
+            )
+        except GitHubError:
+            return None
+        if not isinstance(data, dict) or data.get("errors"):
+            return None
+        user = (data.get("data") or {}).get("user")
+        if not isinstance(user, dict):
+            return None
+        nodes = ((user.get("pinnedItems") or {}).get("nodes")) or []
+        return [n["nameWithOwner"] for n in nodes if isinstance(n, dict) and n.get("nameWithOwner")]
+
+    def get_repo_readme(
+        self, full_name: str, ref: str | None = None, *, path: str = "README.md"
+    ) -> str:
+        """读取仓库 README 文本；无 README 或读取失败时返回空串（不报错）。
+
+        ref 指定分支/提交（§5.6 规则 2：open PR 仓从 readme-auto 分支读，防回退旧文）。
+        path 指定文件（WP7：README.en.md 走 /contents/{path}，无 /readme 等价端点）。
+        """
+        if path == "README.md":
+            url = f"{API}/repos/{full_name}/readme"
+        else:
+            url = f"{API}/repos/{full_name}/contents/{quote(path, safe='')}"
+        url += f"?ref={ref}" if ref else ""
+        try:
+            data, _ = self._get(url, allow_404=True)
         except GitHubError:
             return ""
         if not isinstance(data, dict):

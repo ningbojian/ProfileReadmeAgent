@@ -10,83 +10,82 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .models import TemplateContext
 
-# 语言 → shields 徽章主色（未知语言用中性灰）
+# 统一徽章样式：style=flat（自带 3px 圆角——shields 源码无 "rounded" 样式，
+# 传未知 style 会抛错裂图；flat-square 方角已废弃）、无动画。
+_BADGE_STYLE = "style=flat"
+_STAT_COLOR = "8aa6c4"  # 统计/说明徽章主色（灰蓝，低饱和）
+_SOFT_COLOR = "c9d8e8"  # 实时/日期徽章底色（浅蓝灰）
+
+# 语言 → shields 徽章低饱和主色（2026-10-23 视觉规范：配色清新不刺眼；
+# 旧的大红大亮原色如 Python 3776AB、JavaScript f7df1e 已废弃；未知语言用中性灰）
 _LANG_COLORS: dict[str, str] = {
-    "Python": "3776AB",
-    "JavaScript": "f7df1e",
-    "TypeScript": "3178c6",
-    "Go": "00ADD8",
-    "Rust": "dea581",
-    "Java": "b07219",
-    "C": "A8B9CC",
-    "C++": "00599C",
-    "C#": "512BD4",
-    "PHP": "4F5D95",
-    "Ruby": "701516",
-    "Swift": "F05138",
-    "Kotlin": "7F52FF",
-    "Dart": "0175C2",
-    "Vue": "4FC08D",
-    "HTML": "E34C26",
-    "CSS": "563D7C",
-    "Shell": "89E051",
-    "Lua": "2C2D72",
-    "Jupyter Notebook": "DA5B0B",
-    "Makefile": "427819",
+    "Python": "5b7f9e",
+    "JavaScript": "b09a3f",
+    "TypeScript": "5e81a8",
+    "Go": "5b98a8",
+    "Rust": "a3876a",
+    "Java": "96764a",
+    "C": "848f9e",
+    "C++": "566f8c",
+    "C#": "7568a0",
+    "PHP": "646d8f",
+    "Ruby": "8c5560",
+    "Swift": "a9654e",
+    "Kotlin": "8368bc",
+    "Dart": "4d8ab5",
+    "Vue": "5f9e7a",
+    "HTML": "a56249",
+    "CSS": "726384",
+    "Shell": "6b9450",
+    "Lua": "666a96",
+    "Jupyter Notebook": "94764a",
+    "Makefile": "657a4f",
 }
 
-# 语言 → 卡片标题前缀 emoji（未知语言用包裹箱）
-_LANG_EMOJI: dict[str, str] = {
-    "Python": "🐍",
-    "JavaScript": "📜",
-    "TypeScript": "📘",
-    "Go": "🐹",
-    "Rust": "🦀",
-    "Java": "☕",
-    "C": "⚙️",
-    "C++": "🧩",
-    "C#": "💜",
-    "PHP": "🐘",
-    "Ruby": "💎",
-    "Swift": "🐦",
-    "Kotlin": "🎯",
-    "Dart": "🚀",
-    "Vue": "🌿",
-    "HTML": "🌐",
-    "CSS": "🎨",
-    "Shell": "🖥️",
-    "Lua": "🌙",
-    "Jupyter Notebook": "📓",
-    "Makefile": "🔧",
-}
+
+def _static_badge_url(label: str, value: object, color: str) -> str:
+    """shields 静态徽章 URL：字面横线写成 --，其余按 URL 编码转义，统一样式。
+
+    value 为空时省略消息段（`badge/{label}-{color}`），避免双横线残缺 URL。
+    """
+    text = quote(str(label).replace("-", "--"), safe="")
+    msg = quote(str(value).replace("-", "--"), safe="")
+    mid = f"-{msg}" if msg else ""
+    return f"https://img.shields.io/badge/{text}{mid}-{color}?{_BADGE_STYLE}"
+
+
+def stat_badge(label: str, value: object) -> str:
+    """统计徽章（📊 统计信息行）：markdown 图片语法，链接干净。"""
+    return f"![{label}]({_static_badge_url(label, value, _STAT_COLOR)})"
 
 
 def lang_badge(language: str) -> str:
     """语言静态彩色徽章；空语言返回空串（避免出空段的残缺 URL）。"""
     if not language:
         return ""
-    color = _LANG_COLORS.get(language, "555555")
-    # shields 规则：字面横线写成 --；其余按 URL 编码转义
-    text = quote(language.replace("-", "--"), safe="")
-    return (
-        f'<img src="https://img.shields.io/badge/{text}-{color}'
-        f'?style=flat-square" alt="{language}" />'
-    )
+    color = _LANG_COLORS.get(language, "8a8f98")
+    return f"![{language}]({_static_badge_url(language, '', color)})"
+
+
+def lang_star_badge(language: str, stars: int) -> str:
+    """🏷️ 技术标签徽章：语言 + star 计数（如 Python-120★），低饱和语言色。"""
+    color = _LANG_COLORS.get(language, "8a8f98")
+    return f"![{language}]({_static_badge_url(language, f'{stars}★', color)})"
 
 
 def stars_badge(full_name: str) -> str:
     """star 实时徽章（img.shields.io 按需拉取，README 指纹不受数量变化影响）。"""
     return (
-        f'<img src="https://img.shields.io/github/stars/{full_name}'
-        '?style=flat-square&amp;label=stars" alt="Stars" />'
+        f"![stars](https://img.shields.io/github/stars/{full_name}"
+        f"?{_BADGE_STYLE}&label=stars&labelColor={_STAT_COLOR}&color={_SOFT_COLOR})"
     )
 
 
 def forks_badge(full_name: str) -> str:
     """fork 实时徽章。"""
     return (
-        f'<img src="https://img.shields.io/github/forks/{full_name}'
-        '?style=flat-square&amp;label=forks" alt="Forks" />'
+        f"![forks](https://img.shields.io/github/forks/{full_name}"
+        f"?{_BADGE_STYLE}&label=forks&labelColor={_STAT_COLOR}&color={_SOFT_COLOR})"
     )
 
 
@@ -94,19 +93,72 @@ def push_badge(pushed_at: datetime | None) -> str:
     """最后推送日期静态徽章；无记录返回空串。"""
     if pushed_at is None:
         return ""
-    date = pushed_at.strftime("%Y-%m-%d").replace("-", "--")
-    return (
-        f'<img src="https://img.shields.io/badge/last_push-{date}'
-        '-lightgrey?style=flat-square" alt="最后推送" />'
-    )
+    # 横线转义交给 _static_badge_url 统一处理（2026-10-20 → 2026--10--01）
+    date = pushed_at.strftime("%Y-%m-%d")
+    return f"![last_push]({_static_badge_url('last_push', date, _SOFT_COLOR)})"
 
 
-def lang_emoji(language: str) -> str:
-    """卡片标题前缀 emoji，让不同语言的卡片有辨识度。"""
-    return _LANG_EMOJI.get(language, "📦")
+# 双语标签字典（2026-10-23 WP3：单模板 + labels，不建第二模板）。
+# zh 逐字沿用旧模板字面（旧 zh 测试全绿作回归网）；en 为对应翻译。
+_LABELS: dict[str, dict[str, str]] = {
+    "zh": {
+        "header_a": "此 README 由 profile-agent 自动生成：生成区随数据更新、手工微调会保留"
+        "（与数据冲突处以数据为准、删除会恢复），详见 docs/guide.md。",
+        "header_b": "可编辑区：custom 标记之间的内容，永远保留。",
+        "greeting": "# 👋 你好，我是",
+        "bio_placeholder": "AI 简介暂不可用：配置 {key_env} 后运行 profile-agent 即可生成",
+        "stats_title": "## 📊 统计信息",
+        "tags_title": "## 🏷️ 技术标签",
+        "pinned_title": "## 📌 置顶项目",
+        "repos_title": "## 📦 仓库列表",
+        "notes_title": "## ℹ️ 说明备注",
+        "public_repos": "公开仓库",
+        "total_stars": "总 Star",
+        "th_repo": "仓库",
+        "th_desc": "简介",
+        "th_lang": "语言",
+        "no_repos": "暂无符合条件的项目",
+        "note_prefix": "本页面由 profile-agent 自动生成",
+        "note_at": "于 ",
+        "note_tz": "（北京时间）",
+        "note_suffix": "；仓库数据来自 GitHub API，徽章数值实时刷新。",
+        "alt_stats": "GitHub 统计卡片",
+        "alt_langs": "语言分布卡片",
+        "alt_streak": "连续贡献卡片",
+        "alt_visitors": "主页访问计数",
+    },
+    "en": {
+        "header_a": "This README is auto-generated by profile-agent: the generated region "
+        "follows your data and your manual tweaks are preserved (data wins on conflict; "
+        "deletions are restored). See docs/guide.md.",
+        "header_b": "Editable areas — content between the custom markers — are always preserved.",
+        "greeting": "# 👋 Hi, I'm",
+        "bio_placeholder": "AI bio unavailable: configure {key_env} and run profile-agent to generate it",
+        "stats_title": "## 📊 Statistics",
+        "tags_title": "## 🏷️ Tech Stack",
+        "pinned_title": "## 📌 Pinned",
+        "repos_title": "## 📦 Repositories",
+        "notes_title": "## ℹ️ Notes",
+        "public_repos": "Public repos",
+        "total_stars": "Total stars",
+        "th_repo": "Repo",
+        "th_desc": "Description",
+        "th_lang": "Lang",
+        "no_repos": "No repositories match the filters",
+        "note_prefix": "This page is auto-generated by profile-agent",
+        "note_at": " at ",
+        "note_tz": " (UTC+8)",
+        "note_suffix": "; repo data comes from the GitHub API and badge values refresh live.",
+        "alt_stats": "GitHub stats card",
+        "alt_langs": "Language chart",
+        "alt_streak": "Contribution streak",
+        "alt_visitors": "Profile views",
+    },
+}
 
 
-def render_readme(ctx: TemplateContext, template_path: Path) -> str:
+def render_readme(ctx: TemplateContext, template_path: Path, lang: str = "zh") -> str:
+    """渲染 Overview README；lang=\"en\" 时整页标签切英文（单模板 + labels）。"""
     env = Environment(
         loader=FileSystemLoader(str(template_path.parent)),
         autoescape=select_autoescape(()),
@@ -115,12 +167,14 @@ def render_readme(ctx: TemplateContext, template_path: Path) -> str:
         lstrip_blocks=True,
     )
     template = env.get_template(template_path.name)
+    L = _LABELS.get(lang, _LABELS["zh"])
     return template.render(
         username=ctx.username,
         display_name=ctx.display_name,
         blog=ctx.blog,
         totals=ctx.totals,
         featured=ctx.featured,
+        pinned=ctx.pinned,
         bio_text=ctx.bio_text,
         cards_theme=ctx.cards_theme,
         cards_show=ctx.cards_show,
@@ -133,7 +187,18 @@ def render_readme(ctx: TemplateContext, template_path: Path) -> str:
         stars_badge=stars_badge,
         forks_badge=forks_badge,
         push_badge=push_badge,
-        lang_emoji=lang_emoji,
+        stat_badge=stat_badge,
+        lang_star_badge=lang_star_badge,
+        L=L,
+        # 顶部切换行：两文件同一行互指（双文件互切，2026-10-23 用户选定）
+        switch_line=f"🇨🇳 [中文]({ctx.switch_zh_href}) · 🇺🇸 [English]({ctx.switch_en_href})",
+        header_a=L["header_a"],
+        header_b=L["header_b"],
+        bio_placeholder=L["bio_placeholder"].format(key_env=ctx.key_env),
+        custom_text=ctx.custom_text,
+        # A-WP-B：en 渲染的英译描述（zh 恒空 dict → 短路照搬原文，字节恒等）
+        display_descs=ctx.display_descs,
+        sections=ctx.sections,
     )
 
 

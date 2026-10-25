@@ -1,33 +1,51 @@
 name: Update Profile README
 
 # 全部入口就这一个 workflow：
-#   - 定时（schedule）：每周自动更新
-#   - 手动 Run workflow：对话框里每个公开仓库一个勾选框，勾选后一键只更新它们
-#     勾选框由每次运行自动同步（需要配置 WORKFLOW_PAT secret，见 docs/guide.md）
+#   - 定时（schedule）：cron 每天唤醒，是否真跑由 interval_days 间隔门决定
+#     （Run workflow 的「定时运行间隔」下拉可一键改 1/3/5/7 天，见 docs/guide.md）
+#   - 手动 Run workflow：四个控件——本次强制重跑（单选下拉，四选一）/ 更新主页 /
+#     等待合并 / 定时运行间隔（模式 B 的 git-data 推送与 PR 需配置 WORKFLOW_PAT secret）
+#   - 保存即触发（push）：README.md / README.en.md 推到 main 即唤醒，秒级生效；
+#     与定时/手动共用 concurrency 串行，防循环由 [skip ci] + paths 过滤 + branches:[main] 三重保险
 on:
+  push:
+    branches: [main]
+    paths: [README.md, README.en.md] # 只圈两个 README 文件——其余 push 不触发
   schedule:
-    - cron: "23 2 * * 1" # 每周一 02:23 UTC ≈ 北京时间 10:23；改频率只需改这里
+    - cron: "23 2 * * *" # 每天 02:23 UTC ≈ 北京 10:23 唤醒；间隔门决定今天是否真跑
+    # interval_days: 3 —— 定时运行间隔（天）；Run workflow 下拉改写，勿手改
+    # interval_anchor: 2026-10-22 —— 间隔锚点（UTC 日期）；改间隔时自动重置
   workflow_dispatch:
     inputs:
-      force:
-        description: "忽略增量检测，强制重新生成"
+      rerun:
+        # 重叠勾选合并为一个单选下拉（2026-10-24）：四选一互斥，勾选之间不再有
+        # 「勾了 A 又勾 B 会怎样」的重叠/抵消关系
+        description: "选强制重跑的范围；不选 = 只更新有变化的内容（AI 简介/补位文案仍按缓存复用）"
+        type: choice
+        default: "不强制（按变化更新）"
+        options:
+          - "不强制（按变化更新）"
+          - "强制重写主页"
+          - "强制重跑各仓库 README（主页仍按变化更新）"
+          - "两者都强制（主页重写 + 仓库 README 全量重跑）"
+      update_readme:
+        description: "更新个人主页 overview（默认勾选）；不勾 = 本轮完全不动主页（选了强制重写也跳过）"
+        type: boolean
+        default: true
+      wait_for_merges:
+        description: "开 PR 后等你合并（最多 30 分钟）；不勾 = 直接结束，PR 留着随时可合"
         type: boolean
         default: false
-      update_readme:
-        description: "更新个人主页 overview"
-        type: boolean
-        default: true
-      update_projects:
-        description: "生成/更新项目介绍（简历素材）"
-        type: boolean
-        default: true
-      projects_repos:
-        description: "点名要更新的仓库（逗号分隔，脚本自动化用；日常请用下方勾选框）；留空=按 config 规则；填 all=全部精选"
-        type: string
-        default: ""
-      # <<REPO_CHECKBOXES_START>>
-      # （模板不预置勾选框：配置 WORKFLOW_PAT 后第一次运行，自动生成只含你自己仓库的勾选框）
-      # <<REPO_CHECKBOXES_END>>
+      schedule_interval:
+        description: "改定时周期（本轮结束后生效）；选『不修改』则不改"
+        type: choice
+        default: 不修改（保持当前周期）
+        options:
+          - 不修改（保持当前周期）
+          - 每 1 天
+          - 每 3 天
+          - 每 5 天
+          - 每 7 天
 
 # 防止定时与手动同时运行；不取消进行中的运行
 concurrency:
@@ -36,28 +54,38 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
+  # 有意变更（A-P0）：pull-requests 权限随方向二 PR 审核流一并移除（gh pr 命令已删）
+  issues: write # 模式 B 清单 issue 用内置 GITHUB_TOKEN 开/改/关（§5.7）
 
 jobs:
   update:
-    # 模板仓库守卫：本模板仓（ningbojian/ProfileReadmeAgent）自身永不运行——
-    # 否则定时跑会把模板作者的 profile 内容写回模板。用本模板生成的仓库
-    # 名字不同，此条件恒为 true，不受影响。
+    # 模板仓库自身永不运行：它的 README 是给用户看的说明页，不是个人主页
     if: github.repository != 'ningbojian/ProfileReadmeAgent'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      # 不装任何依赖，纯 grep 判断定时开关
-      - name: 检查定时开关（schedule.enabled）
+      # 不装任何依赖，纯 grep 判断定时开关 + 定时间隔门
+      - name: 检查定时开关与运行间隔（schedule.enabled / interval_days）
         if: github.event_name == 'schedule'
         id: check
         run: |
           if grep -A3 '^schedule:' config.yaml | grep -qE 'enabled:[[:space:]]*false'; then
             echo "schedule=false" >> "$GITHUB_OUTPUT"
             echo "定时更新已关闭（config.yaml 中 schedule.enabled=false），本次跳过"
-          else
-            echo "schedule=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "schedule=true" >> "$GITHUB_OUTPUT"
+          # 间隔门：cron 每天唤醒，实际是否运行由 interval_days × interval_anchor 决定
+          # （两个标记由 Run workflow 的「定时运行间隔」下拉自动改写；删掉两行标记 = 恢复纯 cron）
+          DAYS=$(grep -oE '# interval_days: *[0-9]+' .github/workflows/update-profile.yml | grep -oE '[0-9]+' | head -1)
+          ANCHOR=$(grep -oE '# interval_anchor: *[0-9]{4}-[0-9]{2}-[0-9]{2}' .github/workflows/update-profile.yml | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          if [ -n "$DAYS" ] && [ -n "$ANCHOR" ] && [ "$DAYS" -gt 0 ]; then
+            DIFF=$(( ( $(date -u +%s) - $(date -u -d "$ANCHOR" +%s) ) / 86400 ))
+            if [ $(( DIFF % DAYS )) -ne 0 ]; then
+              echo "schedule=false" >> "$GITHUB_OUTPUT"
+              echo "距锚点 ${ANCHOR} 已 ${DIFF} 天，非每 ${DAYS} 天的运行日，本次跳过（Run workflow 下拉可改间隔）"
+            fi
           fi
 
       - uses: actions/setup-python@v6
@@ -77,215 +105,109 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import yaml
           c = yaml.safe_load(open('config.yaml', encoding='utf-8')) or {}
-          print(f"readme={(c.get('readme') or {}).get('path', 'README.md')}")
+          rp = (c.get('readme') or {}).get('path', 'README.md')
+          print(f"readme={rp}")
+          # 双语第二文件与 cli 同口径派生：README.md → README.en.md（WP8）
+          print(f"readme_en={rp[:-3] + '.en.md' if rp.endswith('.md') else rp + '.en.md'}")
           print(f"snapshot={(c.get('snapshot') or {}).get('path', 'data/snapshot.json')}")
           PY
 
-      # 解析本次要点名的仓库：勾选框优先，其次 projects_repos 字符串输入
-      - name: 解析勾选/点名的仓库
-        if: github.event_name != 'schedule' || steps.check.outputs.schedule == 'true'
-        id: resolve
-        env:
-          INPUT_REPOS: ${{ inputs.projects_repos }}
-          INPUTS_JSON: ${{ toJSON(inputs) }}
-        run: |
-          REPOS=$(python3 - <<'PY'
-          import json
-          import os
-          import re
+      # 有意变更（A-P0）：方向二功能已移除——原「解析勾选/点名的仓库」步骤随
+      # 点名仓库链路一并下线（inputs 无勾选框、恒输出空，唯一消费者是方向二点名重跑）
 
-          try:
-              inputs = json.loads(os.environ.get("INPUTS_JSON") or "{}")
-          except json.JSONDecodeError:
-              inputs = {}
-          try:
-              mapping = json.load(open("data/repo_inputs.json", encoding="utf-8"))
-          except Exception:
-              mapping = {}
-          # 勾选框命中的仓库（映射文件由同步步骤维护；值同样过字符集白名单）
-          picked = sorted(
-              name
-              for box, name in mapping.items()
-              if inputs.get(box) is True and re.fullmatch(r"[A-Za-z0-9._-]+", name or "")
-          )
-          if not picked:
-              # 退回字符串输入：逐 token 校验仓库名字符集（非法 token 直接丢弃，防注入）
-              raw = os.environ.get("INPUT_REPOS") or ""
-              picked = [
-                  t
-                  for t in (x.strip() for x in raw.split(","))
-                  if t and re.fullmatch(r"[A-Za-z0-9._-]+", t)
-              ]
-          print(",".join(picked))
-          PY
-          )
-          echo "repos=$REPOS" >> "$GITHUB_OUTPUT"
-          if [ -n "$REPOS" ]; then
-            echo "本次点名仓库：$REPOS"
-          else
-            echo "未点名仓库：按 config 规则全量处理"
-          fi
-
-      - name: 生成 README 与项目介绍
+      - name: 生成 README
         if: github.event_name != 'schedule' || steps.check.outputs.schedule == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }} # 模式 B：compare/git-data 推送/PR/轮询（§5.7）
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          INPUT_REPOS: ${{ steps.resolve.outputs.repos }}
         run: |
+          # concurrency 组串行：多轮触发会显示 Queued——排队等待上一轮完成，已开的 PR 不受影响
+          echo "提示：定时/手动多轮触发会排队串行执行（显示 Queued），排队期间已开的 PR 不受影响"
           FLAGS=""
-          [ "${{ inputs.force }}" = "true" ] && FLAGS="$FLAGS --force"
+          # 强制重跑范围：单选下拉四选一 → 一一对应 CLI 旗标（互斥，无重叠）
+          case "${{ inputs.rerun }}" in
+            "强制重写主页") FLAGS="$FLAGS --force" ;;
+            "强制重跑各仓库 README（主页仍按变化更新）") FLAGS="$FLAGS --repo-readmes" ;;
+            "两者都强制（主页重写 + 仓库 README 全量重跑）") FLAGS="$FLAGS --force --repo-readmes" ;;
+          esac
           [ "${{ inputs.update_readme }}" = "false" ] && FLAGS="$FLAGS --skip-readme"
-          [ "${{ inputs.update_projects }}" = "false" ] && FLAGS="$FLAGS --skip-projects"
-          # 点名的仓库（勾选框/输入框）：点名即强制重跑
-          if [ -n "$INPUT_REPOS" ]; then
-            FLAGS="$FLAGS --repos $INPUT_REPOS"
-          fi
+          # 等待仅勾选时执行（30 分钟窗口）；不勾与 cron 一样 0 分钟——直接继续
+          [ "${{ inputs.wait_for_merges }}" = "true" ] && FLAGS="$FLAGS --wait-for-merges"
           python -m profile_agent --config config.yaml $FLAGS
 
-      # 把当前仓库列表同步成 Run workflow 对话框里的勾选框。
-      # 改 workflow 文件需要仓库写权限，内置 GITHUB_TOKEN 没有（GitHub 硬限制），
-      # 所以自动同步依赖可选的 WORKFLOW_PAT secret；没配则只同步映射文件，勾选框保持现状。
-      - name: 同步勾选框（仓库列表 → workflow 输入）
-        if: github.event_name != 'schedule' || steps.check.outputs.schedule == 'true'
+      # 「定时运行间隔」下拉：选了天数就改写 cron 旁的间隔标记（提交由下一步统一完成）
+      - name: 调整定时运行间隔（schedule_interval）
+        if: github.event_name == 'workflow_dispatch'
         env:
-          OWNER: ${{ github.repository_owner }}
+          INTERVAL: ${{ inputs.schedule_interval }}
           WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
         run: |
           python3 - <<'PY'
-          import json
+          import datetime
           import os
+          import pathlib
           import re
-          from pathlib import Path
 
-          WF = Path(".github/workflows/update-profile.yml")
-          MAPPING = Path("data/repo_inputs.json")
-          START = "# <<REPO_CHECKBOXES_START>>"
-          END = "# <<REPO_CHECKBOXES_END>>"
-          snap_path = Path("data/snapshot.json")
-          if not snap_path.exists():
-              print("无快照，跳过勾选框同步")
+          choice = os.environ.get("INTERVAL") or ""
+          if choice.startswith("不修改"):
+              print("未选择调整周期，保持当前定时不变")
               raise SystemExit(0)
-          text = WF.read_text(encoding="utf-8")
-          if START not in text or END not in text:
-              print("未找到勾选框标记，跳过同步")
+          if not os.environ.get("WORKFLOW_PAT"):
+              print("::warning::定时间隔调整需要 WORKFLOW_PAT（修改 workflow 文件）；本轮保持原周期")
               raise SystemExit(0)
-          snap = json.loads(snap_path.read_text(encoding="utf-8"))
-          owner = os.environ.get("OWNER", "")
-          repos = [r for r in snap.get("repos", []) if isinstance(r, dict) and r.get("full_name")]
-          # 排除 profile 仓库自身（与工具默认过滤一致；快照里已是公开非 fork 仓库）
-          repos = [r for r in repos if r["full_name"] != f"{owner}/{owner}"]
-          repos.sort(key=lambda r: (-(r.get("stars") or 0), r["full_name"]))
-
-          # 输入 id 必须字母/下划线开头且只含字母数字-_；保留字与撞名的加前缀/序号
-          RESERVED = {"force", "update_readme", "update_projects", "projects_repos"}
-          used: set = set()
-          mapping: dict = {}
-          lines = []
-          for r in repos:
-              name = r["full_name"].split("/", 1)[1]
-              if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name) and name not in RESERVED:
-                  box = name
-              else:
-                  box = "repo-" + re.sub(r"[^A-Za-z0-9_-]", "-", name)
-              base, i = box, 2
-              while box in used:
-                  box = f"{base}-{i}"
-                  i += 1
-              used.add(box)
-              mapping[box] = name
-              # 标签优先显示最近推送日期（比 star/语言直观）；旧版快照缺 pushed_at 则退回
-              pushed = (r.get("pushed_at") or "")[:10]
-              if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pushed or ""):
-                  meta = f"{pushed} 推送"
-              else:
-                  meta = f"⭐{r.get('stars') or 0}"
-                  if r.get("language"):
-                      meta += f" · {r['language']}"
-              lines.append(f"      {box}:")
-              lines.append(f'        description: "{name}（{meta}）"')
-              lines.append("        type: boolean")
-              lines.append("        default: false")
-
-          body = "\n".join(lines) if lines else "      # （暂无公开仓库）"
-          replacement = START + "\n" + body + "\n      " + END
-          updated = re.sub(re.escape(START) + r".*?" + re.escape(END), lambda _m: replacement, text, count=1, flags=re.S)
-          pat = bool(os.environ.get("WORKFLOW_PAT"))
-          # 只看标记区块内部的输入项（比全文扫描更精确，无需排除保留字）
-          block = re.search(re.escape(START) + r"\n(.*?)(?:\n[ \t]*)?" + re.escape(END), text, re.S)
-          file_boxes = (
-              set(re.findall(r"^      ([A-Za-z0-9_-]+):\s*$", block.group(1), re.M))
-              if block
-              else set()
+          m = re.fullmatch(r"每 (\d+) 天", choice)
+          if not m:
+              raise SystemExit(f"未知的间隔选项：{choice!r}")
+          n = int(m.group(1))
+          p = pathlib.Path(".github/workflows/update-profile.yml")
+          text = p.read_text(encoding="utf-8")
+          today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+          text = re.sub(r"# interval_days: *\d+", f"# interval_days: {n}", text, count=1)
+          text = re.sub(
+              r"# interval_anchor: *\d{4}-\d{2}-\d{2}",
+              f"# interval_anchor: {today}",
+              text,
+              count=1,
           )
-          missing = sorted(set(mapping) - file_boxes)
-          stale = sorted(file_boxes - set(mapping))
-          if not pat and not file_boxes:
-              # 模板纯净原则：区块为空 + 无 PAT → 连映射也不写，不把任何仓库名留进文件
-              print("::warning::未配置 WORKFLOW_PAT：对话框还没有勾选框（模板保持纯净，不写入任何仓库名）。配置后第一次运行会自动生成你自己的勾选框（见 docs/guide.md）；期间可用 projects_repos 输入框点名")
-              raise SystemExit(0)
-          MAPPING.parent.mkdir(parents=True, exist_ok=True)
-          MAPPING.write_text(json.dumps(mapping, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          if not pat:
-              # GITHUB_TOKEN 无权改 workflow 文件：只留映射，提示新仓库与残留勾选框
-              if missing:
-                  print(f"::warning::未配置 WORKFLOW_PAT secret，新仓库 {'、'.join(missing)} 暂时进不了勾选框；可先用 projects_repos 输入点名。配置带 repo/workflow 权限的 classic PAT 后会自动同步（见 docs/guide.md）")
-              if stale:
-                  print(f"::warning::对话框里的旧勾选框 {'、'.join(stale)} 已失效（勾了不会选中）；配置 WORKFLOW_PAT 后下次运行会自动清理")
-              if not missing and not stale:
-                  print("未配置 WORKFLOW_PAT：勾选框已覆盖全部仓库（映射已同步）")
-          elif updated == text:
-              print(f"勾选框无变化（{len(mapping)} 个仓库）")
-          else:
-              WF.write_text(updated, encoding="utf-8")
-              print(f"勾选框已同步：{len(mapping)} 个仓库")
+          p.write_text(text, encoding="utf-8")
+          print(f"定时已改为每 {n} 天一次（锚点 {today} UTC 起算，每 N 天的对应日期运行）")
           PY
 
-      # 项目介绍（AI 生成内容）走 PR 人工审核；纯 README/统计更新直接提交
-      - name: 提交变更（项目介绍有变化时开 PR 审核）
+      # 有意变更（A-P0）：方向二已移除——PR 审核流与点名仓库链路一并下线，纯直提 main
+      - name: 提交变更
         if: github.event_name != 'schedule' || steps.check.outputs.schedule == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
-          NAMED_REPOS: ${{ steps.resolve.outputs.repos }}
-          INPUT_FORCE: ${{ inputs.force }}
         run: |
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          review_via_pr=true
-          grep -A6 '^projects:' config.yaml | grep -qE 'review_via_pr:[[:space:]]*false' && review_via_pr=false
-
-          # 项目介绍是否有变化（目录可能不存在，status 比 staged 判断更稳）
-          projects_changed=false
-          if [ -d docs/projects ] && [ -n "$(git status --porcelain -- docs/projects)" ]; then
-            projects_changed=true
-          fi
-
-          # 走 PR 时分支里只放 docs/projects：README/统计/勾选框直接进 main，
-          # 两者文件永不相交 → PR 开着期间 main 再怎么更新都不会产生冲突
-          pr_route=false
-          if [ "$review_via_pr" = "true" ] && [ "$projects_changed" = "true" ]; then
-            pr_route=true
-          fi
-
-          git add "${{ steps.paths.outputs.readme }}" "${{ steps.paths.outputs.snapshot }}"
-          # 勾选框同步产物（workflow 输入块 + 仓库映射）跟 README 一起直接进 main
-          for p in .github/workflows/update-profile.yml data/repo_inputs.json; do
-            if [ -e "$p" ]; then git add "$p"; fi
+          # 文件可能不存在（如 readme.bilingual=false 或首次运行前关闭 readme），逐个判断再 add
+          for p in "${{ steps.paths.outputs.readme }}" "${{ steps.paths.outputs.readme_en }}" "${{ steps.paths.outputs.snapshot }}"; do
+            if [ -e "$p" ]; then
+              git add "$p"
+            fi
           done
-          if [ "$pr_route" = "false" ] && [ "$projects_changed" = "true" ]; then
-            git add docs/projects
+
+          # 定时间隔下拉会改写 workflow 文件；只有 staged 的文件才进提交。
+          # 内置 GITHUB_TOKEN 无权推 workflow 变更——只在配了 WORKFLOW_PAT 时 stage。
+          if ! git diff --quiet -- .github/workflows/update-profile.yml; then
+            if [ -n "$WORKFLOW_PAT" ]; then
+              git add .github/workflows/update-profile.yml
+            else
+              echo "::warning::定时间隔改动未保存：修改 workflow 文件需要 WORKFLOW_PAT（classic，勾选 repo 与 workflow）"
+            fi
           fi
 
           has_direct=false
           if ! git diff --cached --quiet; then
             has_direct=true
           fi
-          if [ "$has_direct" = "false" ] && [ "$pr_route" = "false" ]; then
+          if [ "$has_direct" = "false" ]; then
             echo "无变更，跳过提交"
             exit 0
           fi
@@ -306,63 +228,25 @@ jobs:
             git pull --rebase --autostash origin main
           }
 
-          # ---- 1. 直接提交 main：README/统计/勾选框（非 PR 模式下也含项目介绍）----
-          if [ "$has_direct" = "true" ]; then
-            git commit -m "chore: 自动更新 Profile README [skip ci]"
-            pushed=false
-            for i in 1 2 3; do
-              if err=$(git_push 2>&1); then
-                pushed=true
-                break
-              fi
-              echo "$err"
-              # 权限/认证类失败重试也没用，直接给出修法
-              if echo "$err" | grep -qE 'workflows` permission|Authentication failed|invalid username or password|Support for password authentication'; then
-                echo "::error::push 因权限/认证被拒：修改 workflow 文件需要配置 WORKFLOW_PAT secret（classic PAT 需勾选 repo 与 workflow 两项权限，见 docs/guide.md）；若已配置请检查是否过期"
-                exit 1
-              fi
-              echo "push 被拒绝（main 有新提交），第 $i 次 rebase 重试..."
-              git_pull_rebase
-              sleep 5
-            done
-            if [ "$pushed" != "true" ]; then
-              echo "::error::push 失败（可能与 main 上的手工修改冲突），请打开本次运行日志检查，或手动合并后重新运行工作流"
+          # ---- 直接提交 main：README/统计 ----
+          git commit -m "chore: 自动更新 Profile README [skip ci]"
+          pushed=false
+          for i in 1 2 3; do
+            if err=$(git_push 2>&1); then
+              pushed=true
+              break
+            fi
+            echo "$err"
+            # 权限/认证类失败重试也没用，直接给出修法
+            if echo "$err" | grep -qE 'workflows` permission|Authentication failed|invalid username or password|Support for password authentication'; then
+              echo "::error::push 因权限/认证被拒：修改 workflow 文件需要配置 WORKFLOW_PAT secret（classic PAT 需勾选 repo 与 workflow 两项权限，见 docs/guide.md）；若已配置请检查是否过期"
               exit 1
             fi
-          fi
-
-          # ---- 2. 项目介绍走 PR 人工审核（分支只含 docs/projects）----
-          if [ "$pr_route" = "true" ]; then
-            fingerprint=$(python3 -c "import json;print(json.load(open('${{ steps.paths.outputs.snapshot }}',encoding='utf-8')).get('stats_fingerprint',''))")
-            # 「closed 且未合并」（你点了 Close 拒绝）的批次，常规/定时跑不再重复开 PR；
-            # 但点名重跑（勾选框/--repos/force）是显式要求，不受此压制
-            explicit=false
-            [ -n "$NAMED_REPOS" ] && explicit=true
-            [ "$INPUT_FORCE" = "true" ] && explicit=true
-            if [ "$explicit" = "false" ] && gh pr list --state closed --head auto/profile-update --limit 30 --json body,mergedAt \
-                -q '.[] | select(.mergedAt == null) | .body' | grep -qF "$fingerprint"; then
-              echo "这批内容上次被 Close 拒绝过，本次跳过（想重跑可勾选具体仓库或勾 force）"
-              exit 0
-            fi
-            git checkout -B auto/profile-update
-            git add docs/projects
-            git commit -m "feat: AI 项目介绍更新（待审核）[skip ci]"
-            git push -u origin auto/profile-update --force
-            echo "已推送分支 auto/profile-update（PR 将基于最新 main，无冲突）"
-            if ! gh pr create --title "AI 项目介绍更新（待审核）" \
-              --body "🤖 由 profile-agent 自动生成，请在 Diff 中审核 AI 写的项目介绍/简历素材，可直接编辑后 Merge；不想要就 Close（同批内容不会重复出现）。
-
-          本 PR 只包含 docs/projects（简历素材），主页 README/统计的更新都已直接进 main，不会被本 PR 拖住。
-
-          💡 如本页显示 conflict：重新运行一次本工作流即可自动解决（分支会基于最新 main 重建）。
-
-          数据指纹: $fingerprint" \
-              --head auto/profile-update --base main; then
-              if gh pr view auto/profile-update >/dev/null 2>&1; then
-                gh pr edit auto/profile-update --body "🤖 待审核更新（只含 docs/projects，已刷新）。如显示 conflict 请重新运行工作流。数据指纹: $fingerprint"
-              else
-                echo "::error::创建 PR 被拒绝。请到仓库 Settings → Actions → General → Workflow permissions，勾选 Allow GitHub Actions to create and approve pull requests，然后重新运行本工作流。"
-                exit 1
-              fi
-            fi
+            echo "push 被拒绝（main 有新提交），第 $i 次 rebase 重试..."
+            git_pull_rebase
+            sleep 5
+          done
+          if [ "$pushed" != "true" ]; then
+            echo "::error::push 失败（可能与 main 上的手工修改冲突），请打开本次运行日志检查，或手动合并后重新运行工作流"
+            exit 1
           fi

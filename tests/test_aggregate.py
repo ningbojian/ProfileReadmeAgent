@@ -9,6 +9,7 @@ from profile_agent.aggregate import (
     build_bio_payload,
     compute_totals,
     normalize_repos,
+    resolve_pins,
     select_featured,
     stats_fingerprint,
 )
@@ -47,6 +48,20 @@ def test_normalize_parses_pushed_at():
     cfg = ReposConfig()
     repos = {r.full_name: r for r in normalize_repos(_raw_repos(), cfg)}
     assert repos["alice/cool-tool"].pushed_at == datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+
+
+def test_normalize_carries_default_branch_with_main_fallback():
+    """终审 I2 回归：default_branch 随仓库数据带出（模式 B PR 目标 = 默认分支，§5.5）；
+    载荷缺失时回落 main。"""
+    cfg = ReposConfig()
+    raw = _raw_repos()
+    for item in raw:
+        item["default_branch"] = "master"
+    repos = {r.full_name: r for r in normalize_repos(raw, cfg)}
+    assert repos["alice/cool-tool"].default_branch == "master"
+    # 载荷没有该字段（如精简 fixture）→ 回落 main
+    fallback = {r.full_name: r for r in normalize_repos(_raw_repos(), cfg)}
+    assert fallback["alice/cool-tool"].default_branch == "main"
 
 
 def test_compute_totals():
@@ -106,6 +121,123 @@ def test_featured_count_zero_still_applies_recency_filter():
     names = {r.full_name for r in featured}
     assert "alice/old-thing" not in names  # 2020 年 push，超出 365 天
     assert "alice/cool-tool" in names
+
+
+def test_featured_pin_first_in_config_order():
+    """置顶（2026-10-23 用户需求「自定义置顶展示的 repo」）：pin 名单按配置顺序
+    排最前（与 star 排序相反也如此），其余仓库保持 sort_by 原顺序紧随其后。"""
+    feat = FeaturedConfig(
+        count=0, sort_by="stars", pin=["alice/old-thing", "alice/cool-tool"]
+    )
+    repos = normalize_repos(
+        _raw_repos(), ReposConfig(exclude_forks=False, exclude=["alice/old-profile"])
+    )
+    names = [r.full_name for r in select_featured(repos, feat, now=NOW)]
+    assert names[:2] == ["alice/old-thing", "alice/cool-tool"]  # ① pin 顺序
+    assert names[2:] == ["alice/forked", "alice/archived-one"]  # ② 其余保持 stars 降序
+
+
+def test_featured_pin_bypasses_min_stars_and_recency():
+    """置顶豁免精选层启发式（min_stars/recency_days）——显式点名的展示意图优先，
+    否则置顶的老项目/低星项目会静默消失；未置顶仓库的过滤行为不变。"""
+    feat = FeaturedConfig(
+        count=0, min_stars=100, recency_days=365, sort_by="stars", pin=["alice/old-thing"]
+    )
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    names = [r.full_name for r in select_featured(repos, feat, now=NOW)]
+    assert names[0] == "alice/old-thing"  # 80★、2020 年 push——双过滤本会剔除
+    assert "alice/cool-tool" in names  # 未置顶正常入选
+    assert "alice/archived-one" not in names  # 未置顶照旧被过滤（30★<100 且超龄）
+
+
+def test_featured_pin_occupies_count_quota():
+    """置顶占 count 名额：count 是整个精选列表的唯一硬上限；pin 超 count 只留靠前的；
+    count=0 不截断（置顶全部 + 其余全部）。"""
+    repos = normalize_repos(
+        _raw_repos(), ReposConfig(exclude_forks=False, exclude=["alice/old-profile"])
+    )
+    feat3 = FeaturedConfig(
+        count=3, sort_by="stars", pin=["alice/old-thing", "alice/cool-tool"]
+    )
+    assert [r.full_name for r in select_featured(repos, feat3, now=NOW)] == [
+        "alice/old-thing",
+        "alice/cool-tool",
+        "alice/forked",
+    ]
+    feat1 = FeaturedConfig(
+        count=1, sort_by="stars", pin=["alice/old-thing", "alice/cool-tool"]
+    )
+    assert [r.full_name for r in select_featured(repos, feat1, now=NOW)] == [
+        "alice/old-thing"
+    ]  # ② pin 超 count → 只留靠前的
+    feat0 = FeaturedConfig(count=0, sort_by="stars", pin=["alice/old-thing"])
+    names0 = [r.full_name for r in select_featured(repos, feat0, now=NOW)]
+    assert names0[0] == "alice/old-thing" and len(names0) == 4  # ③ count=0 不截断
+
+
+def test_featured_pin_ignores_unknown_duplicate_and_hard_filtered():
+    """pin 越不过 normalize 硬过滤（private/fork/黑名单——repos 入参已剔除，pin 看不到）；
+    未知名静默忽略（与 repos.exclude 容错一致）、重复取首现、大小写敏感精确匹配。"""
+    feat = FeaturedConfig(
+        count=0,
+        sort_by="stars",
+        pin=[
+            "alice/nope",  # 不存在（写错/改名）→ 静默忽略
+            "alice/old-thing",
+            "old-thing",  # 裸名重复指同一仓 → 去重取首现
+            "Alice/Old-Thing",  # 大小写不同 ≠ 命中（与 exclude 一致）
+            "alice/secret",  # private：normalize 已剔除，pin 拉不回
+            "alice/forked",  # fork：默认剔除，pin 拉不回
+            "alice/old-profile",  # 黑名单：pin 拉不回
+        ],
+    )
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    names = [r.full_name for r in select_featured(repos, feat, now=NOW)]
+    assert names[0] == "alice/old-thing"
+    assert names.count("alice/old-thing") == 1  # 去重
+    assert "alice/secret" not in names
+    assert "alice/forked" not in names
+    assert "alice/nope" not in names
+
+
+def test_featured_pin_matches_bare_name():
+    """裸名（短名）也能命中——与 repos.exclude 的肌肉记忆一致；文档推荐 full_name。"""
+    feat = FeaturedConfig(count=0, sort_by="stars", pin=["old-thing"])
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    assert select_featured(repos, feat, now=NOW)[0].full_name == "alice/old-thing"
+
+
+def test_resolve_pins_order_dedupe_unknown_and_bare_name():
+    """resolve_pins（2026-10-23）：pin 名单 → 置顶仓库列表——按名单顺序、
+    full_name/裸名精确匹配、重复取首现、未知静默忽略；cli 渲染置顶板块用它
+    再与精选名单求交（count 截断语义保持）。"""
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    got = [
+        r.full_name
+        for r in resolve_pins(
+            repos, ["alice/nope", "alice/old-thing", "old-thing", "cool-tool"]
+        )
+    ]
+    assert got == ["alice/old-thing", "alice/cool-tool"]  # 保序、去重、忽略未知
+    assert resolve_pins(repos, []) == []  # 无置顶 → 空列表
+
+
+def test_stats_fingerprint_changes_with_pin_order():
+    """置顶顺序变化 → featured 顺序变化 → stats_fingerprint 变化（增量门自动覆盖的
+    性质锁住，防未来重构丢掉「改 pin 即重渲染」）。"""
+    repos = normalize_repos(_raw_repos(), ReposConfig(exclude=["alice/old-profile"]))
+    totals = compute_totals(_user(), repos)
+    a = select_featured(
+        repos,
+        FeaturedConfig(count=0, sort_by="stars", pin=["alice/old-thing", "alice/cool-tool"]),
+        now=NOW,
+    )
+    b = select_featured(
+        repos,
+        FeaturedConfig(count=0, sort_by="stars", pin=["alice/cool-tool", "alice/old-thing"]),
+        now=NOW,
+    )
+    assert stats_fingerprint(totals, repos, a) != stats_fingerprint(totals, repos, b)
 
 
 def test_fingerprint_stable_and_sensitive():
@@ -198,3 +330,17 @@ def test_topics_affect_fingerprint_and_bio_payload():
     assert stats_fingerprint(totals, repos_b, []) != fp_a
     payload = build_bio_payload(_user(), repos_b, AIConfig())
     assert payload["repos"][0]["topics"] == ["cli", "tools"]
+
+
+def test_render_fingerprint_changes_with_ai_language():
+    """ai.language 进指纹：改主语言 → 指纹变化（强制重渲染，双语首跑开门）。"""
+    import dataclasses
+    from profile_agent.aggregate import render_fingerprint
+    from profile_agent.config import Config
+
+    cfg = Config()
+    user = _user()
+    fp = render_fingerprint(cfg, b"t", user)
+    cfg2 = dataclasses.replace(cfg)
+    cfg2.ai = dataclasses.replace(cfg.ai, language="zh-TW")
+    assert render_fingerprint(cfg2, b"t", user) != fp

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from .models import Sections
+
 VALID_SORT_BY = ("score", "stars", "updated")
 VALID_CARDS = ("stats", "top_langs", "streak")
 
@@ -41,6 +43,7 @@ class FeaturedConfig:
     sort_by: str = "score"
     score_stars_weight: float = 1.0
     score_recency_weight: float = 0.5
+    pin: list[str] = field(default_factory=list)  # 置顶展示的仓库（full_name 或裸名），按此顺序排最前
 
 
 @dataclass
@@ -57,6 +60,8 @@ class ReadmeConfig:
     cards: CardsConfig = field(default_factory=CardsConfig)
     include_update_time: bool = True
     visitors_badge: bool = False  # 主页嵌入第三方「主页访问量」计数徽章（komarev.com）
+    bilingual: bool = True  # true = 同时生成 README.en.md 英文版，顶部互链切换
+    sections: Sections = field(default_factory=Sections)  # 四个板块开关，默认全开
 
 
 @dataclass
@@ -71,7 +76,8 @@ class AIConfig:
     bio_min_chars: int = 100
     bio_max_chars: int = 150
     language: str = "zh-CN"
-    prompt_version: int = 1
+    # 2：2026-10-24 移除简介末尾「亮点：」小节（与置顶项目/仓库列表重复）
+    prompt_version: int = 2
     fill_empty_descriptions: bool = True  # 精选仓库缺描述时用 AI 基于其 README 生成主页补位文案
 
     @property
@@ -86,23 +92,36 @@ class AIConfig:
 
 
 @dataclass
-class ProjectsConfig:
-    """可选功能：按仓库生成深度项目介绍 / 简历素材（docs/projects/）。
-
-    默认关闭；开启且配置好 AI key 后才会生成有内容的介绍文件。
-    """
-
-    enabled: bool = False
-    dir: str = "docs/projects"
-    featured_only: bool = False
-    review_via_pr: bool = True  # 生成/更新走 PR 人工审核；false = 直接提交
-    include: list[str] = field(default_factory=list)  # 非空 = 只给这些仓库名生成
-    exclude: list[str] = field(default_factory=list)  # 永远跳过这些仓库名
+class SnapshotConfig:
+    path: str = "data/snapshot.json"
 
 
 @dataclass
-class SnapshotConfig:
-    path: str = "data/snapshot.json"
+class RepoReadmesConfig:
+    """模式 B：代码变更 → 各仓库 README 托管区自动更新（默认关闭）。
+
+    独立于 ai.prompt_version（设计 §12-6）：两种内容可独立迭代。
+    """
+
+    enabled: bool = False
+    include: list[str] = field(default_factory=list)  # 空 = 按 repos 过滤规则的全部仓库
+    exclude: list[str] = field(default_factory=list)  # 在 include 之上再排除
+    max_diff_chars: int = 6000
+    prompt_version: int = 1
+    pr_branch: str = "readme-auto/update"
+
+
+@dataclass
+class RepoDescriptionsConfig:
+    """仓库描述自动写回（默认关闭）。
+
+    第一次见到仓库只记基线、绝不 PATCH；用户手动改过描述即永久交还控制权；
+    每轮最多写 BATCH_LIMIT 个。include/exclude 语义与 repo_readmes 完全一致。
+    """
+
+    enabled: bool = False
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -113,7 +132,10 @@ class Config:
     featured: FeaturedConfig = field(default_factory=FeaturedConfig)
     readme: ReadmeConfig = field(default_factory=ReadmeConfig)
     ai: AIConfig = field(default_factory=AIConfig)
-    projects: ProjectsConfig = field(default_factory=ProjectsConfig)
+    repo_readmes: RepoReadmesConfig = field(default_factory=RepoReadmesConfig)
+    repo_descriptions: RepoDescriptionsConfig = field(
+        default_factory=RepoDescriptionsConfig
+    )
     snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
 
 
@@ -170,6 +192,9 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
     sort_by = str(feat.get("sort_by") or "score")
     if sort_by not in VALID_SORT_BY:
         raise ConfigError(f"featured.sort_by 只能是 {VALID_SORT_BY} 之一，收到：{sort_by}")
+    pin = feat.get("pin") or []
+    if not isinstance(pin, list):
+        raise ConfigError("featured.pin 必须是列表")
     cfg.featured = FeaturedConfig(
         count=int(feat.get("count", 0)),
         min_stars=int(feat.get("min_stars", 0)),
@@ -177,6 +202,7 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         sort_by=sort_by,
         score_stars_weight=float(feat.get("score_stars_weight", 1.0)),
         score_recency_weight=float(feat.get("score_recency_weight", 0.5)),
+        pin=[str(x) for x in pin],
     )
 
     readme = _section(data, "readme")
@@ -189,6 +215,21 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
     for name in show:
         if name not in VALID_CARDS:
             raise ConfigError(f"readme.cards.show 含未知卡片：{name}（可选：{VALID_CARDS}）")
+    sections_raw = readme.get("sections", {})
+    if sections_raw is None:
+        sections_raw = {}
+    if not isinstance(sections_raw, dict):
+        raise ConfigError("readme.sections 必须是映射（键值对）")
+    sections = Sections()
+    for key in ("bio", "stats", "pinned", "table"):
+        if key in sections_raw:
+            value = sections_raw[key]
+            # 必须是真正的布尔值：YAML 里写 "false"（带引号）是字符串，静默当真会害人
+            if not isinstance(value, bool):
+                raise ConfigError(
+                    f"readme.sections.{key} 必须是 true 或 false（收到：{value!r}）"
+                )
+            setattr(sections, key, value)
     cfg.readme = ReadmeConfig(
         enabled=bool(readme.get("enabled", True)),
         path=str(readme.get("path") or "README.md"),
@@ -199,6 +240,8 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         ),
         include_update_time=bool(readme.get("include_update_time", True)),
         visitors_badge=bool(readme.get("visitors_badge", False)),
+        bilingual=bool(readme.get("bilingual", True)),
+        sections=sections,
     )
 
     ai = _section(data, "ai")
@@ -212,6 +255,11 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         raise ConfigError(
             'ai.provider="openai" 时必须填 ai.base_url（如 https://api.deepseek.com）'
         )
+    language = str(ai.get("language") or "zh-CN")
+    if language != "zh-CN":
+        raise ConfigError(
+            f'ai.language 目前只支持 "zh-CN"（输出语言由 readme.bilingual 控制），收到：{language}'
+        )
     cfg.ai = AIConfig(
         enabled=bool(ai.get("enabled", True)),
         provider=provider,
@@ -222,23 +270,50 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         max_age_days=int(ai.get("max_age_days", 14)),
         bio_min_chars=int(ai.get("bio_min_chars", 100)),
         bio_max_chars=int(ai.get("bio_max_chars", 150)),
-        language=str(ai.get("language") or "zh-CN"),
-        prompt_version=int(ai.get("prompt_version", 1)),
+        language=language,
+        prompt_version=int(ai.get("prompt_version", 2)),
         fill_empty_descriptions=bool(ai.get("fill_empty_descriptions", True)),
     )
 
-    proj = _section(data, "projects")
-    include = proj.get("include") or []
-    exclude = proj.get("exclude") or []
-    if not isinstance(include, list) or not isinstance(exclude, list):
-        raise ConfigError("projects.include / projects.exclude 必须是列表")
-    cfg.projects = ProjectsConfig(
-        enabled=bool(proj.get("enabled", True)),
-        dir=str(proj.get("dir") or "docs/projects"),
-        featured_only=bool(proj.get("featured_only", False)),
-        review_via_pr=bool(proj.get("review_via_pr", True)),
-        include=[str(x) for x in include],
-        exclude=[str(x) for x in exclude],
+    # 有意变更（A-P0）：项目介绍功能已移除——用户 config 残留的 projects: 段
+    # 一律静默忽略（_section 之外不再读取），不报错、不生效
+
+    rr = _section(data, "repo_readmes")
+    rr_include = rr.get("include") or []
+    rr_exclude = rr.get("exclude") or []
+    if not isinstance(rr_include, list):
+        raise ConfigError("repo_readmes.include 必须是列表")
+    if not isinstance(rr_exclude, list):
+        raise ConfigError("repo_readmes.exclude 必须是列表")
+    cfg.repo_readmes = RepoReadmesConfig(
+        enabled=bool(rr.get("enabled", False)),
+        include=[str(x) for x in rr_include],
+        exclude=[str(x) for x in rr_exclude],
+        max_diff_chars=int(rr.get("max_diff_chars", 6000)),
+        prompt_version=int(rr.get("prompt_version", 1)),
+        pr_branch=str(rr.get("pr_branch") or "readme-auto/update"),
+    )
+
+    # 仓库描述自动写回（2026-10-25）：默认关闭；开关不进 render_fingerprint——
+    # 开启/关闭本身不该重写 README，用 repo_descriptions.is_dirty 单独开门
+    rd = _section(data, "repo_descriptions")
+    rd_include = rd.get("include") or []
+    rd_exclude = rd.get("exclude") or []
+    if not isinstance(rd_include, list):
+        raise ConfigError("repo_descriptions.include 必须是列表")
+    if not isinstance(rd_exclude, list):
+        raise ConfigError("repo_descriptions.exclude 必须是列表")
+    rd_enabled = rd.get("enabled", False)
+    # 必须是真正的布尔值：YAML 里写 "false"（带引号）是字符串，bool() 会当成 True，
+    # 从而意外开启「对外写仓库描述」——与 readme.sections 同款校验。
+    if not isinstance(rd_enabled, bool):
+        raise ConfigError(
+            f"repo_descriptions.enabled 必须是 true 或 false（收到：{rd_enabled!r}）"
+        )
+    cfg.repo_descriptions = RepoDescriptionsConfig(
+        enabled=rd_enabled,
+        include=[str(x) for x in rd_include],
+        exclude=[str(x) for x in rd_exclude],
     )
 
     snap = _section(data, "snapshot")

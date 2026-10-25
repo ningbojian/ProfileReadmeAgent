@@ -1,17 +1,18 @@
 # GitHub Overview Auto Agent 配置文件
 # 使用指南见 docs/guide.md
+# 注意：本文件是模板默认配置，同步工具代码时请保留（模板专属）。
 
 schedule:
   enabled: true # false = 关闭定时更新（GitHub Actions 手动触发仍可用）
 
 github:
-  username: "" # 留空 = 自动使用仓库所有者（Use this template 拿到后无需改）
+  username: "" # 留空 = 自动使用仓库所有者（Use this template 拿到后无需改；本地运行请填用户名）
   token_env: "GITHUB_TOKEN" # token 所在环境变量名（Actions 内置 GITHUB_TOKEN 即可）
 
 repos:
   exclude_forks: true
   exclude_archived: false
-  exclude: [] # 仓库名黑名单，如 ["you/you"]（profile 仓库自身）
+  exclude: [] # 仓库名黑名单，如 ["you/you"]（不想在列表里看到 profile 仓库自身时填）
 
 featured:
   count: 0 # 上主页的项目数上限；0 = 全部
@@ -20,9 +21,10 @@ featured:
   sort_by: "score" # score | stars | updated
   score_stars_weight: 1.0
   score_recency_weight: 0.5
+  pin: [] # 兜底种子：仅当无法读取原生 Pinned 时生效；正常跟随 GitHub 主页 Customize your pins
 
 readme:
-  enabled: true # false = 不更新个人主页 overview（可只更新项目介绍）
+  enabled: true # false = 不更新个人主页 overview
   path: "README.md"
   template: "templates/profile.md.j2"
   cards:
@@ -30,6 +32,12 @@ readme:
     show: ["stats", "top_langs", "streak"] # 可选: stats, top_langs, streak
   include_update_time: true
   visitors_badge: false # true = 主页嵌入「主页访问量」计数徽章（komarev.com 免费第三方服务）
+  bilingual: true # 同时生成 README.en.md（英文版），两文件顶部互链切换
+  sections: # 板块开关（默认全开）：只隐藏生成区，不动手写/custom 内容
+    bio: true # 简介
+    stats: true # 统计卡与技术标签
+    pinned: true # 📌 置顶项目（关掉后这些仓库回到下方列表）
+    table: true # 📦 仓库列表（与 pinned 都关 → 不输出任何仓库区块）
 
 ai:
   enabled: true
@@ -41,20 +49,31 @@ ai:
   #   key_env: "AI_API_KEY"                 ← secret 名字（workflow 已内置注入，建议就叫这个）
   #   model: "deepseek-chat"                ← 服务商文档里的模型名
   provider: "anthropic"
+  model: "claude-opus-5-5" # 降本可换 "claude-haiku-5-5"
   max_repos: 15 # 喂给模型的仓库数上限
   max_age_days: 14 # 简介最长复用天数，超过才重新生成
   bio_min_chars: 100
   bio_max_chars: 150
   language: "zh-CN"
-  prompt_version: 1 # 改 prompt 时 +1，强制重新生成简介
+  prompt_version: 2 # 改 prompt 时 +1，强制重新生成简介
+  fill_empty_descriptions: true # 列表里缺描述的仓库用其 README 生成一句话补位
 
-projects:
-  enabled: true # true = 生成项目介绍/简历素材（AI 内容走 PR 审核）
-  dir: "docs/projects"
-  featured_only: false # true = 只给精选列表（featured）生成；false = 全部仓库都生成
-  include: [] # 非空 = 只给这些仓库名生成（多选），如 ["cool-tool", "web-app"]
-  exclude: [] # 永远跳过这些仓库名
-  review_via_pr: true # AI 生成内容走 PR 人工审核；false = 直接提交
+# 模式 B：各仓库 README 托管区自动更新（代码提交 → AI 更新该仓库 README → 开 PR 审核）
+# 开启需配置 WORKFLOW_PAT secret；默认关闭。
+repo_readmes:
+  enabled: false
+  include: [] # 空 = 全部公开仓库；灰度建议先放 1 个，如 ["your-repo"]
+  exclude: [] # 在 include 之上再排除
+  max_diff_chars: 6000
+  prompt_version: 2
+  pr_branch: "readme-auto/update"
+
+# 仓库描述自动写回（默认关闭）：仓库有新推送时用 AI 重写 GitHub description。
+# 需要 WORKFLOW_PAT；第一次见到只记基线、你手改过就永久停手、每轮最多 5 个。
+repo_descriptions:
+  enabled: false
+  include: []
+  exclude: []
 
 snapshot:
   path: "data/snapshot.json"

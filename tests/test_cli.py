@@ -40,9 +40,18 @@ def test_dry_run_prints_readme_and_writes_nothing(tmp_path, capsys):
     code = _run(cfg, dry_run=True)
     assert code == 0
     out = capsys.readouterr().out
-    assert "仓库统计" in out and "我的项目" in out
+    assert "统计信息" in out and "仓库列表" in out
     assert not (tmp_path / "README.md").exists()
     assert not (tmp_path / "data" / "snapshot.json").exists()
+    # --dry-run 承诺「只打印不写文件」——项目介绍目录同样不得落盘（M4 走查回归）
+    assert not (tmp_path / "docs" / "projects").exists()
+
+
+def test_full_run_never_creates_docs_projects(tmp_path):
+    """项目介绍功能已移除（A-P0 回归锁②）：完整运行不得产生 docs/projects（0 token 消耗）。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    assert not (tmp_path / "docs" / "projects").exists()
 
 
 def test_full_run_writes_readme_and_snapshot(tmp_path):
@@ -50,7 +59,9 @@ def test_full_run_writes_readme_and_snapshot(tmp_path):
     assert _run(cfg) == 0
     readme = tmp_path / "README.md"
     snap = tmp_path / "data" / "snapshot.json"
-    assert readme.exists() and "仓库统计" in readme.read_text(encoding="utf-8")
+    assert readme.exists() and "统计信息" in readme.read_text(encoding="utf-8")
+    # 有意变更（WP6→A-WP2）：旧注释锁「面板常驻」——面板已彻底移除，未配置 pin 时不再出现任何 📌
+    assert "## 📌" not in readme.read_text(encoding="utf-8")  # 未配置 pin 不出置顶板块
     data = json.loads(snap.read_text(encoding="utf-8"))
     assert data["username"] == "alice"
     assert data["stats_fingerprint"].startswith("sha256:")
@@ -67,6 +78,105 @@ def test_second_run_is_noop_when_unchanged(tmp_path):
     # 无变化：文件时间戳不变（未重写）
     assert readme.stat().st_mtime_ns == readme_mtime
     assert snap.stat().st_mtime_ns == snap_mtime
+
+
+def test_featured_pin_renders_pinned_section(tmp_path):
+    """featured.pin 端到端（2026-10-23 置顶需求 + README 视觉改版）：置顶仓库渲染
+    成 📌 置顶卡片，📦 仓库列表不重复它，板块顺序置顶在前。"""
+    cfg = _write_config(tmp_path)
+    with cfg.open("a", encoding="utf-8") as fh:
+        fh.write('featured:\n  pin: ["alice/old-thing"]\n')
+    assert _run(cfg) == 0
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "## 📌 置顶项目" in readme
+    assert "### ⭐ [old-thing](https://github.com/alice/old-thing)" in readme
+    assert "> 很久没动的项目" in readme  # 置顶卡片一句话摘要
+    assert readme.index("## 📌 置顶项目") < readme.index("## 📦 仓库列表")
+    assert "| [old-thing](" not in readme  # 列表不重复置顶仓库
+    assert "| [cool-tool](" in readme  # 其余仓库仍在表格
+
+
+# ---- A-WP2 一次性迁移：旧版置顶面板摘除 ----
+
+# 旧版面板块（WP6 渲染形态：zh README 底部 <details> 折叠区 + pin-config 锚点）
+_LEGACY_PANEL = (
+    "<details>\n<summary><b>📌 置顶配置面板（网页直接勾选）</b></summary>\n\n"
+    "<!-- pin-config:start -->\n- [x] alice/old-thing\n<!-- pin-config:end -->\n</details>\n\n"
+)
+
+
+def _simulate_legacy_run(tmp_path: Path, panel: str = _LEGACY_PANEL, extra: str = "") -> None:
+    """把基线产物改写成「旧版最后一轮」形态：README/快照 base 都带面板、pins=旧勾选。"""
+    readme = tmp_path / "README.md"
+    snap = tmp_path / "data" / "snapshot.json"
+    old_text = readme.read_text(encoding="utf-8").replace(
+        "<!-- profile-agent:custom:start -->", panel + extra + "<!-- profile-agent:custom:start -->"
+    )
+    readme.write_text(old_text, encoding="utf-8")
+    data = json.loads(snap.read_text(encoding="utf-8"))
+    data["pins"] = ["alice/old-thing"]
+    data["readme_last"] = old_text  # base = 旧版渲染输出（含面板）——真实升级形态
+    snap.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def test_legacy_panel_stripped_once_then_noop(tmp_path, capsys):
+    """A-WP2：盘上残留旧版面板 → 迁移轮整块摘除 + 中文警告；旧勾选沿用为置顶；下轮 noop。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    _simulate_legacy_run(tmp_path)
+    assert _run(cfg) == 0
+    out = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "pin-config" not in out  # 锚点随面板整块消失
+    assert "置顶配置面板" not in out
+    err = capsys.readouterr().err
+    assert "警告：检测到旧版置顶面板/指针（一次性迁移），本轮已清除" in err
+    assert "## 📌 置顶项目" in out  # prev.pins 过渡：旧面板勾选沿用为置顶
+    # 迁移自终止：下一轮无残留、指纹一致 → noop（mtime 不变）
+    mtime = (tmp_path / "README.md").stat().st_mtime_ns
+    assert _run(cfg) == 0
+    assert (tmp_path / "README.md").stat().st_mtime_ns == mtime
+
+
+def test_legacy_en_pointer_stripped(tmp_path):
+    """A-WP2：en 文件残留旧指针文案 → 迁移轮同样摘除（zh/en 标记独立检测）。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    en = tmp_path / "README.en.md"
+    snap = tmp_path / "data" / "snapshot.json"
+    pointer = (
+        "> ⚙️ Pin configuration lives in the pin panel at the bottom of the Chinese README "
+        "(tick, then Commit — it takes effect within seconds).\n"
+    )
+    old_en = en.read_text(encoding="utf-8").replace(
+        "<!-- profile-agent:custom:start -->", pointer + "<!-- profile-agent:custom:start -->"
+    )
+    en.write_text(old_en, encoding="utf-8")
+    # base 同步含指针（真实升级形态：旧版 en 渲染输出即带指针）
+    data = json.loads(snap.read_text(encoding="utf-8"))
+    data["readme_last_en"] = old_en
+    snap.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert _run(cfg) == 0
+    out = en.read_text(encoding="utf-8")
+    assert "Pin configuration lives" not in out
+    assert "pin panel" not in out
+
+
+def test_user_edited_panel_lines_still_removed_by_migration(tmp_path):
+    """A-WP2：用户手改过面板行也整块摘除（编辑与 ours 删除区间相撞被拦）；custom 手改保留。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    # 基线+旧面板作为 base；盘上=用户又勾了一个仓库（手改面板行）
+    _simulate_legacy_run(tmp_path)
+    readme = tmp_path / "README.md"
+    theirs = readme.read_text(encoding="utf-8").replace(
+        "- [x] alice/old-thing", "- [x] alice/old-thing\n- [x] alice/cool-tool"
+    )
+    readme.write_text(theirs, encoding="utf-8")
+    assert _run(cfg) == 0
+    out = readme.read_text(encoding="utf-8")
+    assert "pin-config" not in out and "置顶配置面板" not in out
+    # 沿用 base 里的旧勾选（手改的新增勾选随面板一并丢弃，不产生半摘状态）
+    assert "### ⭐ [old-thing](https://github.com/alice/old-thing)" in out
 
 
 def test_force_regenerates_even_when_unchanged(tmp_path):
@@ -97,19 +207,6 @@ def _with_env(monkeypatch, **env):
         monkeypatch.setenv(k, v)
 
 
-def _block_project_ai(monkeypatch):
-    """挡掉项目介绍的真实 AI 调用：让 update_project_intros 快速降级为数据版。
-
-    这些测试关注的是 bio/门控逻辑；不挡的话 anthropic SDK 会真的去连网络。
-    """
-    import profile_agent.projects as projects_mod
-
-    def fake(repo, cfg, **kwargs):
-        raise RuntimeError("offline")
-
-    monkeypatch.setattr(projects_mod, "generate_project_intro", fake)
-
-
 def test_env_username_fallback_zero_config(tmp_path, monkeypatch):
     """fork 即用：config 里 username 留空，靠 GITHUB_REPOSITORY_OWNER 兜底。"""
     cfg = tmp_path / "config.yaml"
@@ -132,12 +229,12 @@ snapshot:
 
 
 def _gen(monkeypatch, texts, calls):
-    """替换 generate_bio：记录调用并按序返回 (text, generated)。"""
+    """替换 generate_bio：记录调用并按序返回 (zh, en, generated) 三元组（WP4）。"""
     import profile_agent.cli as cli_mod
 
     def fake(payload, cfg, **kwargs):
         calls.append(kwargs)
-        return texts[len(calls) - 1], True
+        return texts[len(calls) - 1]
 
     monkeypatch.setattr(cli_mod, "generate_bio", fake)
 
@@ -145,63 +242,23 @@ def _gen(monkeypatch, texts, calls):
 def test_ai_bio_generated_then_gate_skips(tmp_path, monkeypatch):
     cfg = _write_config(tmp_path)
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    import profile_agent.projects as projects_mod
-
-    # 项目介绍的 AI 也成功（ai_generated=True）→ 第二次运行才是整体无变化
-    monkeypatch.setattr(
-        projects_mod, "generate_project_intro", lambda repo, cfg_ai, **kw: "AI 介绍"
-    )
     calls = []
-    _gen(monkeypatch, [("初始简介", True)], calls)
+    # 有意变更（WP4）：fake 需带 en——双语下 en 缺失会触发下轮重生成，门关不严
+    _gen(monkeypatch, [("初始简介", "Initial EN", True)], calls)
     assert run(cfg, fixture=FIXTURES) == 0
     assert len(calls) == 1
     assert "初始简介" in (tmp_path / "README.md").read_text(encoding="utf-8")
-    # 第二次：简介新鲜 + 数据无变 + 无占位待升级 → 增量门整体跳过，不再调用
+    # 第二次：简介新鲜 + 数据无变 → 增量门整体跳过，不再调用
+    # （有意变更 A-P0：原「项目介绍 AI 也成功」前提随功能移除，门不再有 projects 子句）
     assert run(cfg, fixture=FIXTURES) == 0
     assert len(calls) == 1
-
-
-def test_ai_available_upgrades_stub_on_next_run(tmp_path, monkeypatch):
-    """占位版介绍 + AI 恢复可用 → 下一次运行自动重写为 AI 版（无需 force）。"""
-    import profile_agent.cli as cli_mod
-    import profile_agent.projects as projects_mod
-
-    cfg = _write_config(tmp_path)
-    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
-
-    def failing(repo, cfg_ai, **kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(projects_mod, "generate_project_intro", failing)
-    assert run(cfg, fixture=FIXTURES) == 0
-    intro = tmp_path / "docs" / "projects" / "cool-tool.md"
-    assert "数据版占位" in intro.read_text(encoding="utf-8")
-
-    # AI 恢复：下一次普通运行（数据没变）就应升级占位内容
-    ok: list[str] = []
-
-    def ok_gen(repo, cfg_ai, **kwargs):
-        ok.append(repo.name)
-        return "AI 升级后的介绍"
-
-    monkeypatch.setattr(projects_mod, "generate_project_intro", ok_gen)
-    assert run(cfg, fixture=FIXTURES) == 0
-    assert ok  # 占位版被重新生成
-    assert "AI 升级后的介绍" in intro.read_text(encoding="utf-8")
-
-    # 第三次：已升级且数据无变 → 门关闭，不再调用
-    n = len(ok)
-    assert run(cfg, fixture=FIXTURES) == 0
-    assert len(ok) == n
 
 
 def test_stale_bio_regenerates_even_when_data_unchanged(tmp_path, monkeypatch):
     cfg = _write_config(tmp_path)
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    _block_project_ai(monkeypatch)
     calls = []
-    _gen(monkeypatch, [("初始简介", True), ("刷新后的简介", True)], calls)
+    _gen(monkeypatch, [("初始简介", "", True), ("刷新后的简介", "", True)], calls)
     run(cfg, fixture=FIXTURES)
     # 把简介时间改老（超过 max_age_days=14）
     snap_path = tmp_path / "data" / "snapshot.json"
@@ -211,6 +268,31 @@ def test_stale_bio_regenerates_even_when_data_unchanged(tmp_path, monkeypatch):
     assert run(cfg, fixture=FIXTURES) == 0
     assert len(calls) == 2  # 简介过期 → 重新生成
     assert "刷新后的简介" in (tmp_path / "README.md").read_text(encoding="utf-8")
+
+
+def test_dropped_english_bio_is_not_retried_every_round(tmp_path, monkeypatch):
+    """AI 双语返回里英文被丢弃：同一输入只试一次，门关上，不再每轮白跑一次 AI。"""
+    cfg = _write_config(tmp_path)
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    calls = []
+    _gen(monkeypatch, [("初始简介", "", True), ("刷新后的简介", "", True)], calls)
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(calls) == 1
+    snap_path = tmp_path / "data" / "snapshot.json"
+    snap_bytes = snap_path.read_bytes()
+    readme_mtime = (tmp_path / "README.md").stat().st_mtime_ns
+
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(calls) == 1  # 同输入不再重试
+    assert (tmp_path / "README.md").stat().st_mtime_ns == readme_mtime
+    assert snap_path.read_bytes() == snap_bytes  # 也不再产生「只有快照变化」的提交
+
+    # 简介过期后才重新尝试英文（数据变化 / 改 prompt_version 同理）
+    data = json.loads(snap_path.read_text(encoding="utf-8"))
+    data["bio"]["generated_at"] = "2000-01-01T00:00:00+00:00"
+    snap_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(calls) == 2
 
 
 def test_config_change_invalidates_gate(tmp_path, monkeypatch):
@@ -240,7 +322,6 @@ def test_ai_failure_with_no_previous_bio_returns_zero(tmp_path, monkeypatch):
 
     cfg = _write_config(tmp_path)
     _with_env(monkeypatch, ANTHROPIC_API_KEY="bad-key")
-    _block_project_ai(monkeypatch)
     monkeypatch.setattr(
         cli_mod, "generate_bio", lambda *a, **k: (_ for _ in ()).throw(BioError("boom"))
     )
@@ -258,74 +339,19 @@ def test_force_bypasses_gate(tmp_path, capsys):
     assert "无变化，跳过更新" not in out  # 增量门没有拦截（明细表里的逐仓库「跳过」是另一回事）
 
 
-def test_skip_projects_keeps_intros_untouched(tmp_path):
-    """只更新 overview：数据变化时 README 更新，但介绍文件保持原样。"""
-    cfg = _write_config(tmp_path)
-    run(cfg, fixture=FIXTURES)  # 无 AI key：生成数据版介绍
-    intro = tmp_path / "docs" / "projects" / "cool-tool.md"
-    assert intro.exists()
-    before = intro.read_text(encoding="utf-8")
-    intro.unlink()  # 删掉一个介绍文件
-    assert run(cfg, fixture=FIXTURES, skip_projects=True, force=True) == 0
-    assert not intro.exists()  # --skip-projects 不重建
-    assert (tmp_path / "README.md").exists()
-
-
 def test_skip_readme_keeps_readme_untouched(tmp_path):
-    """只更新项目介绍：README 不动，介绍文件正常生成。"""
+    """skip_readme（独立功能）：README 文件不动，快照等其余流程照常。"""
     cfg = _write_config(tmp_path)
     run(cfg, fixture=FIXTURES)
     readme = tmp_path / "README.md"
     mtime = readme.stat().st_mtime_ns
-    (tmp_path / "docs" / "projects" / "cool-tool.md").unlink()
     assert run(cfg, fixture=FIXTURES, skip_readme=True, force=True) == 0
     assert readme.stat().st_mtime_ns == mtime  # README 未被重写
-    assert (tmp_path / "docs" / "projects" / "cool-tool.md").exists()
-
-
-def test_projects_include_whitelist(tmp_path):
-    cfg_path = tmp_path / "config.yaml"
-    as_posix = lambda p: p.as_posix()
-    cfg_path.write_text(
-        f"""
-github:
-  username: "alice"
-repos:
-  exclude: ["alice/old-profile"]
-projects:
-  include: ["cool-tool"]
-readme:
-  path: "{as_posix(tmp_path / 'README.md')}"
-  template: "{as_posix(TEMPLATE)}"
-snapshot:
-  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
-""",
-        encoding="utf-8",
-    )
-    assert run(cfg_path, fixture=FIXTURES, no_ai=True) == 0
-    files = {p.name for p in (tmp_path / "docs" / "projects").iterdir()}
-    assert files == {"cool-tool.md"}  # include 白名单外的仓库不生成
+    # 有意变更（A-P0）：原「介绍文件正常生成」断言随项目介绍功能移除删除
+    assert not (tmp_path / "docs" / "projects").exists()
 
 
 # ---- 描述补位 + 逐仓库精细化 ----
-
-
-def test_project_targets_exclude_profile_repo(tmp_path):
-    """profile 仓库自身（用户名/用户名）永不生成项目介绍——它的 README 是工具输出，
-    pushed_at 又随每次 bot 提交前进，自引用会让它每轮都过期、无限重生成开 PR。"""
-    import profile_agent.cli as cli_mod
-    from profile_agent.models import Repo
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text('github:\n  username: "alice"\n', encoding="utf-8")
-    cfg = cli_mod.load_config(cfg_path)
-    alice = Repo(name="alice", full_name="alice/alice", description="", stars=0)
-    mystery = Repo(name="mystery", full_name="alice/mystery", description="", stars=3)
-    featured = [alice, mystery]
-    for featured_only in (True, False):
-        cfg.projects.featured_only = featured_only
-        targets = cli_mod._project_targets([alice, mystery], featured, cfg)
-        assert [r.name for r in targets] == ["mystery"], f"featured_only={featured_only}"
 
 
 def test_short_intro_skips_profile_repo(tmp_path, monkeypatch):
@@ -338,8 +364,6 @@ def test_short_intro_skips_profile_repo(tmp_path, monkeypatch):
         f"""
 github:
   username: "alice"
-projects:
-  enabled: false
 readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
@@ -349,12 +373,12 @@ snapshot:
         encoding="utf-8",
     )
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
     calls = []
 
     def fake(repo, cfg_ai, **kwargs):
         calls.append(repo.full_name)
-        return "一个命令行密码生成器。"
+        return "一个命令行密码生成器。", ""
 
     monkeypatch.setattr(cli_mod, "generate_short_intro", fake)
     fx = _empty_desc_fixture(tmp_path)
@@ -424,8 +448,6 @@ def test_short_intro_generated_for_empty_description_then_reused(tmp_path, monke
         f"""
 github:
   username: "alice"
-projects:
-  enabled: false
 readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
@@ -435,12 +457,13 @@ snapshot:
         encoding="utf-8",
     )
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
     calls = []
 
     def fake(repo, cfg_ai, **kwargs):
         calls.append(repo.full_name)
-        return "一个命令行密码生成器。"
+        # 有意变更（WP4）：fake 需带 en——双语下 en 缺失会触发下轮重生成，复用断言碎
+        return "一个命令行密码生成器。", "A CLI password generator."
 
     monkeypatch.setattr(cli_mod, "generate_short_intro", fake)
     fx = _empty_desc_fixture(tmp_path)
@@ -466,8 +489,6 @@ github:
   username: "alice"
 ai:
   fill_empty_descriptions: false
-projects:
-  enabled: false
 readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
@@ -477,79 +498,28 @@ snapshot:
         encoding="utf-8",
     )
     _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
     calls = []
     monkeypatch.setattr(
         cli_mod,
         "generate_short_intro",
-        lambda *a, **k: calls.append(1) or "不该被调用",
+        lambda *a, **k: (calls.append(1) or "不该被调用", ""),
     )
     fx = _empty_desc_fixture(tmp_path)
     assert run(cfg_path, fixture=fx) == 0
     assert calls == []
-    assert "（暂无描述）" in (tmp_path / "README.md").read_text(encoding="utf-8")
-
-
-def test_only_repos_targets_named_repo_even_outside_featured(tmp_path):
-    """--repos 精确指定：即使仓库不在精选名单也生成介绍。"""
-    cfg_path = tmp_path / "config.yaml"
-    as_posix = lambda p: p.as_posix()
-    # old-thing 很久没动，默认会被 recency 过滤出精选；用 --repos 强制点名
-    cfg_path.write_text(
-        f"""
-github:
-  username: "alice"
-repos:
-  exclude: ["alice/old-profile"]
-readme:
-  path: "{as_posix(tmp_path / 'README.md')}"
-  template: "{as_posix(TEMPLATE)}"
-snapshot:
-  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
-""",
-        encoding="utf-8",
-    )
-    assert run(cfg_path, fixture=FIXTURES, no_ai=True, only_repos=["old-thing"]) == 0
-    files = {p.name for p in (tmp_path / "docs" / "projects").iterdir()}
-    assert files == {"old-thing.md"}
-
-
-def test_only_repos_forces_regenerate_when_unchanged(tmp_path, monkeypatch, capsys):
-    """点名 --repos：即使数据/哈希没变也强制重新生成（勾选板 /run 的核心语义）。"""
-    import profile_agent.cli as cli_mod
-    import profile_agent.projects as projects_mod
-
-    cfg = _write_config(tmp_path)
-    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
-    versions = []
-
-    def fake_gen(repo, cfg_ai, **kwargs):
-        versions.append(repo.name)
-        return f"介绍第{len(versions)}版"
-
-    monkeypatch.setattr(projects_mod, "generate_project_intro", fake_gen)
-    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", True))
-    monkeypatch.setattr(cli_mod, "generate_short_intro", lambda *a, **k: "不该被调用")
-
-    assert run(cfg, fixture=FIXTURES) == 0
-    n_first = len(versions)
-    assert n_first >= 1
-    # 数据没变的普通运行 → 增量门跳过，零调用
-    assert run(cfg, fixture=FIXTURES) == 0
-    assert len(versions) == n_first
-    capsys.readouterr()
-    # 点名重跑 cool-tool：哈希没变也重新生成
-    assert run(cfg, fixture=FIXTURES, only_repos=["cool-tool"]) == 0
-    assert len(versions) == n_first + 1
-    assert versions[-1] == "cool-tool"
-    body = (tmp_path / "docs" / "projects" / "cool-tool.md").read_text(encoding="utf-8")
-    assert "介绍第" in body and "版" in body
-    out = capsys.readouterr().out
-    assert "已重新生成" in out  # 明细表如实反映强制重跑
+    # 无补位 → 表格 — 占位（「暂无描述」废话已废弃）
+    assert "| — |" in (tmp_path / "README.md").read_text(encoding="utf-8")
 
 
 def test_run_writes_step_summary_table(tmp_path, monkeypatch):
-    """Actions 的 GITHUB_STEP_SUMMARY 存在时，写出逐仓库动作明细表。"""
+    """Actions 的 GITHUB_STEP_SUMMARY 存在时，写出逐仓库动作明细表。
+
+    有意变更（A-P0）：项目介绍列随功能移除，明细表只剩「主页描述补位」单列；
+    表只在有补位目标（存在空描述仓库 + AI 可用）时出现，故用空描述 fixture + AI 挡板。
+    """
+    import profile_agent.cli as cli_mod
+
     cfg_path = tmp_path / "config.yaml"
     as_posix = lambda p: p.as_posix()
     cfg_path.write_text(
@@ -558,8 +528,6 @@ github:
   username: "alice"
 repos:
   exclude: ["alice/old-profile"]
-projects:
-  include: ["cool-tool"]
 readme:
   path: "{as_posix(tmp_path / 'README.md')}"
   template: "{as_posix(TEMPLATE)}"
@@ -570,11 +538,15 @@ snapshot:
     )
     summary = tmp_path / "step_summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    assert run(cfg_path, fixture=FIXTURES, no_ai=True) == 0
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    monkeypatch.setattr(cli_mod, "generate_short_intro", lambda *a, **k: ("密码生成器。", ""))
+    fx = _empty_desc_fixture(tmp_path)
+    assert run(cfg_path, fixture=fx) == 0
     text = summary.read_text(encoding="utf-8")
-    assert "项目介绍" in text
-    assert "cool-tool" in text
-    assert "已生成数据版" in text  # 无 AI key → 数据版占位
+    assert "主页描述补位" in text
+    assert "mystery" in text
+    assert "已生成补位文案" in text
 
 
 def test_snapshot_repos_carry_pushed_at(tmp_path):
@@ -584,3 +556,962 @@ def test_snapshot_repos_carry_pushed_at(tmp_path):
     by_name = {r["full_name"]: r for r in data["repos"]}
     # 供勾选框标签显示「最近推送日期」用
     assert by_name["alice/cool-tool"]["pushed_at"].startswith("2026-10-01")
+
+
+# ============================ WP3 双语 README（2026-10-23） ============================
+
+
+def test_full_run_writes_both_readme_files(tmp_path):
+    """bilingual 默认开：一次运行同时写 README.md（中文）与 README.en.md（英文），
+    两文件顶部互链切换。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "统计信息" in zh and "Statistics" in en
+    switch = "🇨🇳 [中文](./README.md) · 🇺🇸 [English](./README.en.md)"
+    assert switch in zh and switch in en
+
+
+def test_bilingual_false_writes_only_readme_md(tmp_path):
+    """bilingual: false 一键回退单文件：只产 README.md，不产 en（迁移护栏）。"""
+    as_posix = lambda p: p.as_posix()  # noqa: E731
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"""
+github:
+  username: "alice"
+repos:
+  exclude: ["alice/old-profile"]
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+  bilingual: false
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    assert _run(cfg) == 0
+    assert (tmp_path / "README.md").exists()
+    assert not (tmp_path / "README.en.md").exists()
+
+
+def test_deleted_en_readme_regenerated_by_gate(tmp_path):
+    """en 文件被手删 → 增量门视为「readme 缺失」开门，重渲染时重建 README.en.md。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    (tmp_path / "README.en.md").unlink()
+    assert _run(cfg) == 0  # 门不得早退
+    assert (tmp_path / "README.en.md").exists()
+
+
+def test_dry_run_prints_both_languages(tmp_path, capsys):
+    """--dry-run 双语分段打印（zh 段 + en 段），不落盘。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "统计信息" in out and "Statistics" in out
+    assert not (tmp_path / "README.md").exists()
+    assert not (tmp_path / "README.en.md").exists()
+
+
+def test_second_run_is_noop_with_bilingual(tmp_path):
+    """双语幂等：连跑两遍，第二遍 zh/en 文件时间戳均不变（零写入）。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    zh, en = tmp_path / "README.md", tmp_path / "README.en.md"
+    zh_mt, en_mt = zh.stat().st_mtime_ns, en.stat().st_mtime_ns
+    assert _run(cfg) == 0
+    assert zh.stat().st_mtime_ns == zh_mt
+    assert en.stat().st_mtime_ns == en_mt
+
+
+def test_bio_fresh_requires_en_when_bilingual(tmp_path, monkeypatch):
+    """双语下新鲜判据补查 text_en：zh 新鲜但 en 缺失 → 必须重新生成（防单语卡死）。"""
+    cfg = _write_config(tmp_path)
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    calls = []
+    _gen(monkeypatch, [("第一版", "First EN", True), ("第二版", "Second EN", True)], calls)
+    assert run(cfg, fixture=FIXTURES) == 0
+    snap_path = tmp_path / "data" / "snapshot.json"
+    data = json.loads(snap_path.read_text(encoding="utf-8"))
+    assert data["bio"]["text"] == "第一版"
+    assert data["bio"]["text_en"] == "First EN"
+    # 清掉 en：指纹/时间仍新鲜，但双语下不完整 → 门必须开、重新生成
+    data["bio"]["text_en"] = ""
+    snap_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(calls) == 2
+    data = json.loads(snap_path.read_text(encoding="utf-8"))
+    assert data["bio"]["text"] == "第二版"
+    assert data["bio"]["text_en"] == "Second EN"
+
+
+def test_short_intro_clean_requires_en_when_bilingual(tmp_path, monkeypatch):
+    """双语下补位复用判据补查 short_intro_en：en 缺失时不得复用 zh-only 旧文案。"""
+    import profile_agent.cli as cli_mod
+
+    cfg_path = tmp_path / "config.yaml"
+    as_posix = lambda p: p.as_posix()
+    cfg_path.write_text(
+        f"""
+github:
+  username: "alice"
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "Bio EN", True))
+    calls = []
+
+    def fake(repo, cfg_ai, **kwargs):
+        calls.append(repo.full_name)
+        return "一个命令行密码生成器。", "A CLI password generator."
+
+    monkeypatch.setattr(cli_mod, "generate_short_intro", fake)
+    fx = _empty_desc_fixture(tmp_path)
+
+    assert run(cfg_path, fixture=fx) == 0
+    assert "A CLI password generator." in (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert calls == ["alice/mystery"]
+    # 清掉 short_intro_en：hash 仍匹配 → 复用判据必须因缺 en 而拒绝，重新生成
+    snap_path = tmp_path / "data" / "snapshot.json"
+    data = json.loads(snap_path.read_text(encoding="utf-8"))
+    for repo in data["repos"]:
+        repo.pop("short_intro_en", None)
+    snap_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert run(cfg_path, fixture=fx) == 0
+    assert calls == ["alice/mystery", "alice/mystery"]
+
+
+# ============================ A-WP-B：英文版仓库描述自动英译 ============================
+
+
+def _desc_translation_env(monkeypatch, translate_fake=None):
+    """AI 环境 + bio 挡板 + 可注入的 translate_descriptions fake；返回调用批次记录。"""
+    import profile_agent.cli as cli_mod
+
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    calls = []
+
+    def default_fake(items, cfg_ai, **kwargs):
+        calls.append(list(items))
+        return {fn: "A cool tool." for fn, _ in items}, ""
+
+    monkeypatch.setattr(cli_mod, "translate_descriptions", translate_fake or default_fake)
+    return calls
+
+
+def _copy_fixture(tmp_path):
+    """拷贝基线 fixture 到临时目录（可改 repos.json 后当 fixture 用）。"""
+    fx = tmp_path / "fixture"
+    fx.mkdir(exist_ok=True)
+    for name in ("user.json", "repos.json"):
+        (fx / name).write_text(
+            (FIXTURES / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    return fx
+
+
+def test_en_repo_descriptions_translated_and_cached(tmp_path, monkeypatch):
+    """A-WP-B：含中文描述的仓库 en 出英译、zh 逐字原文；缓存落盘 desc_en + desc_en_src。"""
+    cfg = _write_config(tmp_path)
+    calls = _desc_translation_env(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0
+    zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "| [cool-tool](https://github.com/alice/cool-tool) | A cool tool. |" in en
+    assert "一个很酷的工具" in zh  # zh 逐字原文（display_descs 恒空）
+    assert "一个很酷的工具" not in en  # 英译命中后中文不再进 en
+    assert calls and ("alice/cool-tool", "一个很酷的工具") in calls[0]
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = next(r for r in data["repos"] if r["full_name"] == "alice/cool-tool")
+    assert entry["desc_en"] == "A cool tool."
+    assert entry["desc_en_src"] == "一个很酷的工具"
+
+
+def test_translation_cached_on_force_rerun_zero_ai(tmp_path, monkeypatch):
+    """A-WP-B：描述没变时 force 重渲染 0 次翻译调用（缓存仍喂 en 渲染）。"""
+    cfg = _write_config(tmp_path)
+    calls = _desc_translation_env(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert len(calls) == 1
+    assert run(cfg, fixture=FIXTURES, force=True) == 0
+    assert len(calls) == 1  # 缓存新鲜（desc_en_src == description）→ 不重调
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "A cool tool." in en
+
+
+def test_translation_ai_failure_falls_back_to_original(tmp_path, monkeypatch):
+    """A-WP-B：翻译失败 → en 回落中文原文、退出码 0、不写缓存（下轮开门重试）。"""
+    def fail(items, cfg_ai, **kwargs):
+        return {}, "仓库描述英译失败（沿用原文）：api down"
+
+    cfg = _write_config(tmp_path)
+    _desc_translation_env(monkeypatch, fail)
+    assert run(cfg, fixture=FIXTURES) == 0
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "一个很酷的工具" in en  # 回落原文
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = next(r for r in data["repos"] if r["full_name"] == "alice/cool-tool")
+    assert "desc_en" not in entry  # 失败不写缓存
+
+
+def test_no_translation_when_bilingual_false(tmp_path, monkeypatch):
+    """A-WP-B：单语模式（bilingual: false）不发起翻译、不产 en 文件。"""
+    as_posix = lambda p: p.as_posix()  # noqa: E731
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"""
+github:
+  username: "alice"
+repos:
+  exclude: ["alice/old-profile"]
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+  bilingual: false
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    calls = _desc_translation_env(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert calls == []  # 单语模式零翻译
+    assert not (tmp_path / "README.en.md").exists()
+
+
+def test_ascii_description_becomes_chinese_in_zh_readme(tmp_path, monkeypatch):
+    """2026-10-24 双语描述：纯 ASCII 描述不进英文翻译批（原本就是英文），但要进
+    中文翻译批——中文 README 呈现中文描述，英文 README 逐字原文。
+
+    有意变更：旧断言「纯 ASCII 不译」只针对 en 文件成立；现在 zh/en 各自看语言，
+    zh 侧必须把非中文描述中译（用户要求：切到哪版就读哪版的语言）。
+    缓存落盘 desc_zh + desc_zh_src，描述不变不重译。
+    """
+    import profile_agent.cli as cli_mod
+
+    cfg = _write_config(tmp_path)
+    fx = _copy_fixture(tmp_path)
+    repos = json.loads((fx / "repos.json").read_text(encoding="utf-8"))
+    for r in repos:
+        if r["full_name"] == "alice/cool-tool":
+            r["description"] = "A cool CLI tool"
+    (fx / "repos.json").write_text(json.dumps(repos, ensure_ascii=False), encoding="utf-8")
+    calls = []
+
+    def fake(items, cfg_ai, *, target="en", **kwargs):
+        calls.append((target, list(items)))
+        return {fn: (f"中译：{d}" if target == "zh" else f"T:{d}") for fn, d in items}, ""
+
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    monkeypatch.setattr(cli_mod, "translate_descriptions", fake)
+
+    assert run(cfg, fixture=fx) == 0
+    en_batch = [fn for t, batch in calls if t == "en" for fn, _ in batch]
+    zh_batch = [fn for t, batch in calls if t == "zh" for fn, _ in batch]
+    assert "alice/cool-tool" not in en_batch  # 原本就是英文，不英译
+    assert "alice/cool-tool" in zh_batch  # 中译目标
+    zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "中译：A cool CLI tool" in zh
+    assert "A cool CLI tool" in en  # en 照搬原文
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = next(r for r in data["repos"] if r["full_name"] == "alice/cool-tool")
+    assert entry["desc_zh"] == "中译：A cool CLI tool"
+    assert entry["desc_zh_src"] == "A cool CLI tool"
+    # 第二轮 force：描述没变 → 缓存命中，0 次新翻译调用
+    calls.clear()
+    assert run(cfg, fixture=fx, force=True) == 0
+    assert calls == []
+
+
+def test_description_change_triggers_retranslate(tmp_path, monkeypatch):
+    """A-WP-B：描述原文变化（desc_en_src 失效）→ 本轮开门重译并覆盖缓存。"""
+    import profile_agent.cli as cli_mod
+
+    cfg = _write_config(tmp_path)
+    fx = _copy_fixture(tmp_path)
+    calls = []
+
+    def fake(items, cfg_ai, **kwargs):
+        calls.append(list(items))
+        return {fn: f"T:{desc}" for fn, desc in items}, ""
+
+    monkeypatch.setattr(cli_mod, "translate_descriptions", fake)
+    _with_env(monkeypatch, ANTHROPIC_API_KEY="test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    assert run(cfg, fixture=fx) == 0
+    assert len(calls) == 1
+    assert "T:一个很酷的工具" in (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    # 改 fixture 里 cool-tool 的描述 → 指纹开门 + 缓存失效 → 重译
+    repos = json.loads((fx / "repos.json").read_text(encoding="utf-8"))
+    for r in repos:
+        if r["full_name"] == "alice/cool-tool":
+            r["description"] = "一个很酷的新工具"
+    (fx / "repos.json").write_text(json.dumps(repos, ensure_ascii=False), encoding="utf-8")
+    assert run(cfg, fixture=fx) == 0
+    assert len(calls) == 2
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "T:一个很酷的新工具" in en
+    assert "T:一个很酷的工具" not in en  # 旧译文被覆盖
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = next(r for r in data["repos"] if r["full_name"] == "alice/cool-tool")
+    assert entry["desc_en_src"] == "一个很酷的新工具"
+
+
+def test_no_translation_without_ai_key(tmp_path, monkeypatch):
+    """A-WP-B：缺 AI key（降级运行）→ 不翻译，en 回落中文原文（预期降级）。"""
+    cfg = _write_config(tmp_path)
+    calls = _desc_translation_env(monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert run(cfg, fixture=FIXTURES, no_ai=True) == 0
+    assert calls == []
+    en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    assert "一个很酷的工具" in en
+
+
+def test_custom_region_language_mismatch_warns_without_rewriting(tmp_path, monkeypatch, capsys):
+    """手写区语言不匹配：只写警告（日志 + Step Summary），绝不翻译或改写原文。"""
+    cfg = _write_config(tmp_path)
+    (tmp_path / "README.md").write_text(
+        "# My Profile\nI build developer tools and write about them in English.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "README.en.md").write_text(
+        "# 我的主页\n这是我手写的中文内容，本应出现在英文文件里却写成了中文。\n",
+        encoding="utf-8",
+    )
+    summary = tmp_path / "step_summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    assert _run(cfg) == 0
+
+    err = capsys.readouterr().err
+    assert "README.md 的 custom 区看起来是英文" in err
+    assert "README.en.md 的 custom 区看起来是中文" in err
+    text = summary.read_text(encoding="utf-8")
+    assert "看起来是英文" in text and "看起来是中文" in text
+    # 只提醒：手写内容逐字保留（不翻译、不改写）
+    assert "I build developer tools and write about them in English." in (
+        tmp_path / "README.md"
+    ).read_text(encoding="utf-8")
+    assert "这是我手写的中文内容" in (tmp_path / "README.en.md").read_text(encoding="utf-8")
+
+
+# ============================ 仓库描述写回（2026-10-25） ============================
+
+
+def _desc_cfg(tmp_path: Path, *, enabled: bool = True) -> Path:
+    """repo_descriptions 场景配置：单语、无翻译干扰，只考察描述写回链路。"""
+    cfg = tmp_path / "config.yaml"
+    as_posix = lambda p: p.as_posix()  # noqa: E731
+    cfg.write_text(
+        f"""
+github:
+  username: "alice"
+repos:
+  exclude: ["alice/old-profile"]
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+  bilingual: false
+repo_descriptions:
+  enabled: {"true" if enabled else "false"}
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    return cfg
+
+
+def _desc_client():
+    from fake_github import FakeHttp
+    from profile_agent.github_client import GitHubClient
+
+    http = FakeHttp()
+    return http, GitHubClient("pat", session=http, sleep=lambda _s: None)
+
+
+def _bump_fixture(fx: Path, full_name: str, *, pushed: str, description: str | None = None):
+    path = fx / "repos.json"
+    repos = json.loads(path.read_text(encoding="utf-8"))
+    for r in repos:
+        if r["full_name"] == full_name:
+            r["pushed_at"] = pushed
+            if description is not None:
+                r["description"] = description
+    path.write_text(json.dumps(repos, ensure_ascii=False), encoding="utf-8")
+
+
+def test_repo_descriptions_disabled_by_default_never_patches(tmp_path, monkeypatch):
+    import profile_agent.cli as cli_mod
+
+    cfg = _desc_cfg(tmp_path, enabled=False)
+    http, client = _desc_client()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    monkeypatch.setattr(
+        cli_mod,
+        "generate_descriptions",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("关闭时不得调 AI")),
+    )
+    assert run(cfg, fixture=_copy_fixture(tmp_path), b_client=client) == 0
+    assert http.writes() == []
+
+
+def test_repo_descriptions_enabling_records_baseline_once_then_noop(
+    tmp_path, monkeypatch, capsys
+):
+    """升级路径：先按旧配置跑一轮，再开启开关——只记基线、零 PATCH、零 AI；
+    基线记完后下一轮门关闭，不会因为开关本身反复触发。"""
+    import profile_agent.cli as cli_mod
+
+    fx = _copy_fixture(tmp_path)
+    http, client = _desc_client()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    monkeypatch.setattr(
+        cli_mod,
+        "generate_descriptions",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("首次只记基线")),
+    )
+    disabled = _desc_cfg(tmp_path, enabled=False)
+    assert run(disabled, fixture=fx, b_client=client) == 0
+    assert http.writes() == []
+
+    enabled = _desc_cfg(tmp_path, enabled=True)
+    assert run(enabled, fixture=fx, b_client=client) == 0
+    assert http.writes() == []
+    out = capsys.readouterr().out
+    assert "基线" in out
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = data["repo_descriptions"]["alice/cool-tool"]
+    assert entry["baseline"] == "一个很酷的工具"
+    assert entry["written"] == "一个很酷的工具"
+    assert entry["manual"] is False
+    assert "alice/alice" not in data["repo_descriptions"]  # profile 自身排除
+
+    assert run(enabled, fixture=fx, b_client=client) == 0
+    assert "无变化，跳过更新" in capsys.readouterr().out
+    assert http.writes() == []
+
+
+def test_repo_descriptions_push_updates_github_readme_and_snapshot(
+    tmp_path, monkeypatch, capsys
+):
+    """pushed_at 变了 → AI 生成新描述 → PATCH → 同轮渲染用新描述 + 快照存响应值。"""
+    import profile_agent.cli as cli_mod
+
+    from fake_github import FakeResponse
+    from profile_agent.github_client import API
+
+    fx = _copy_fixture(tmp_path)
+    http, client = _desc_client()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    cfg = _desc_cfg(tmp_path)
+    summary = tmp_path / "step_summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert run(cfg, fixture=fx, b_client=client) == 0  # 记基线
+
+    _bump_fixture(
+        fx, "alice/cool-tool", pushed="2026-10-24T00:00:00Z", description="一个很酷的工具"
+    )
+    seen = []
+
+    def fake_generate(items, cfg_ai, **kwargs):
+        seen.extend(items)
+        return {"alice/cool-tool": "会把 CSV 一键转成表格的命令行工具"}, ""
+
+    monkeypatch.setattr(cli_mod, "generate_descriptions", fake_generate)
+    http.add(
+        "PATCH",
+        f"{API}/repos/alice/cool-tool",
+        FakeResponse(200, {"description": "会把 CSV 一键转成表格的命令行工具"}),
+    )
+    assert run(cfg, fixture=fx, b_client=client) == 0
+
+    assert [i["full_name"] for i in seen] == ["alice/cool-tool"]
+    assert seen[0]["target"] == "zh"  # 描述原本是中文
+    assert [r["method"] for r in http.writes()] == ["PATCH"]
+    assert http.requests[-1]["json"] == {"description": "会把 CSV 一键转成表格的命令行工具"}
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "会把 CSV 一键转成表格的命令行工具" in readme  # 同轮渲染就用新描述
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    entry = data["repo_descriptions"]["alice/cool-tool"]
+    assert entry["written"] == "会把 CSV 一键转成表格的命令行工具"
+    assert entry["previous"] == "一个很酷的工具"
+    assert entry["pushed_at"] == "2026-10-24T00:00:00+00:00"
+    text = summary.read_text(encoding="utf-8")
+    assert "仓库描述" in text and "已更新" in text
+    assert "描述已更新" in capsys.readouterr().out
+
+
+def test_repo_descriptions_manual_edit_is_never_overwritten(tmp_path, monkeypatch, capsys):
+    """用户手改描述后永久交还控制权：不 PATCH、不调 AI，并明确提示。"""
+    import profile_agent.cli as cli_mod
+
+    fx = _copy_fixture(tmp_path)
+    http, client = _desc_client()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    cfg = _desc_cfg(tmp_path)
+    assert run(cfg, fixture=fx, b_client=client) == 0  # 记基线
+
+    _bump_fixture(
+        fx,
+        "alice/cool-tool",
+        pushed="2026-10-24T00:00:00Z",
+        description="我亲手写的描述，别动",
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "generate_descriptions",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("手动改过不得调 AI")),
+    )
+    assert run(cfg, fixture=fx, b_client=client) == 0
+    assert http.writes() == []
+    data = json.loads((tmp_path / "data" / "snapshot.json").read_text(encoding="utf-8"))
+    assert data["repo_descriptions"]["alice/cool-tool"]["manual"] is True
+    assert "手动" in capsys.readouterr().out
+    assert "我亲手写的描述，别动" in (tmp_path / "README.md").read_text(encoding="utf-8")
+
+
+# ============================ 首次接管 PR 预览（2026-10-25） ============================
+
+_TAKEOVER_BRANCH = "readme-auto/takeover"
+_OWNER = "alice/alice"
+
+
+def _pulls_url(base: str = "main") -> str:
+    return (
+        f"https://api.github.com/repos/{_OWNER}/pulls"
+        f"?state=open&head=alice:{_TAKEOVER_BRANCH}&base={base}"
+    )
+
+
+def _handwritten(tmp_path: Path, *, bilingual: bool = True) -> None:
+    (tmp_path / "README.md").write_text(
+        "# 我的主页\n\n我手写的介绍，请完整保留。\n\n## 联系我\n- email: me@example.com\n",
+        encoding="utf-8",
+    )
+    if bilingual:
+        (tmp_path / "README.en.md").write_text(
+            "# My Profile\n\nHandwritten English intro to preserve.\n", encoding="utf-8"
+        )
+
+
+def _takeover_client(
+    *, prs_first=None, with_commit_head=True, blob_ok=True, repo_default_branch="main"
+):
+    from fake_github import FakeHttp, FakeResponse
+    from profile_agent.github_client import API, GitHubClient
+
+    http = FakeHttp()
+    # 主页仓库不在 repos 列表时（常见：config 排除了 profile 自身），默认分支走 API
+    http.add(
+        "GET",
+        f"{API}/repos/{_OWNER}",
+        FakeResponse(200, {"default_branch": repo_default_branch}),
+    )
+    # 开局检测 + open_or_refresh_pr 内部再查一次
+    first = prs_first if prs_first is not None else [FakeResponse(200, [])] * 2
+    http.add("GET", _pulls_url(repo_default_branch), *first)
+    if with_commit_head:
+        http.add(
+            "GET",
+            f"{API}/repos/{_OWNER}/commits/HEAD",
+            FakeResponse(200, {"sha": "headsha123"}),
+        )
+        http.add(
+            "GET",
+            f"{API}/repos/{_OWNER}/git/ref/heads/{_TAKEOVER_BRANCH}",
+            FakeResponse(404),
+        )
+    if blob_ok:
+        http.add(
+            "POST",
+            f"{API}/repos/{_OWNER}/git/blobs",
+            *[FakeResponse(201, {"sha": f"blob{i}"}) for i in range(3)],
+        )
+    else:
+        # 每个 blob 重试 2 次（共 3 次）后抛错——足够让首个 blob 失败并触发回退
+        http.add(
+            "POST",
+            f"{API}/repos/{_OWNER}/git/blobs",
+            *[FakeResponse(500, text="boom") for _ in range(6)],
+        )
+    http.add("POST", f"{API}/repos/{_OWNER}/git/trees", FakeResponse(201, {"sha": "tree1"}))
+    http.add("POST", f"{API}/repos/{_OWNER}/git/commits", FakeResponse(201, {"sha": "commit1"}))
+    http.add("POST", f"{API}/repos/{_OWNER}/git/refs", FakeResponse(201, {"ref": "ref1"}))
+    http.add(
+        "POST",
+        f"{API}/repos/{_OWNER}/pulls",
+        FakeResponse(201, {"number": 12, "html_url": "https://github.com/alice/alice/pull/12"}),
+    )
+    return http, GitHubClient("pat", session=http, sleep=lambda _s: None)
+
+
+def _takeover_ai(monkeypatch):
+    import profile_agent.cli as cli_mod
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "Bio", True))
+    monkeypatch.setattr(cli_mod, "translate_descriptions", lambda items, cfg, **kw: ({}, ""))
+    return cli_mod
+
+
+def test_first_takeover_opens_pr_and_leaves_main_untouched(tmp_path, monkeypatch, capsys):
+    """首次接管：一个 PR 装齐中英 README + 快照；本地 main 一个字节都不动。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    before_en = (tmp_path / "README.en.md").read_text(encoding="utf-8")
+    http, client = _takeover_client()
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+
+    out = capsys.readouterr().out
+    assert "接管" in out and "pull/12" in out
+    # 本地零写入（快照也不落盘——快照随 PR 一起合并）
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == before_zh
+    assert (tmp_path / "README.en.md").read_text(encoding="utf-8") == before_en
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+
+    tree_req = next(r for r in http.requests if r["url"].endswith("/git/trees"))
+    paths = {e["path"] for e in tree_req["json"]["tree"]}
+    assert paths == {"README.md", "README.en.md", "data/snapshot.json"}
+    blobs = [r for r in http.requests if r["url"].endswith("/git/blobs")]
+    assert len(blobs) == 3
+    assert "我手写的介绍，请完整保留" in blobs[0]["json"]["content"]
+    assert "Handwritten English intro to preserve" in blobs[1]["json"]["content"]
+    snap = json.loads(blobs[2]["json"]["content"])
+    assert snap["schema"] == 5 and snap["username"] == "alice"
+    pr_req = next(r for r in http.requests if r["url"].endswith("/pulls") and r["method"] == "POST")
+    assert pr_req["json"]["head"] == _TAKEOVER_BRANCH
+    assert pr_req["json"]["base"] == "main"
+    assert "接管" in pr_req["json"]["title"]
+    assert "data/snapshot.json" in pr_req["json"]["body"]
+
+
+def test_takeover_skips_whole_round_while_pr_open(tmp_path, monkeypatch, capsys):
+    """接管 PR 还开着：直接跳过（不重渲染、不调 AI、不开第二条 PR）。"""
+    from fake_github import FakeResponse
+
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    http, client = _takeover_client(
+        prs_first=[
+            FakeResponse(
+                200,
+                [{"number": 12, "html_url": "https://github.com/alice/alice/pull/12"}],
+            )
+        ],
+        with_commit_head=False,
+    )
+    cli_mod = _takeover_ai(monkeypatch)
+    monkeypatch.setattr(
+        cli_mod,
+        "generate_bio",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("PR 待合并时不得调 AI")),
+    )
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    out = capsys.readouterr().out
+    assert "仍待合并" in out and "pull/12" in out
+    assert not any(r["method"] != "GET" for r in http.requests)
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
+
+
+def test_takeover_without_pat_writes_directly_with_explicit_warning(
+    tmp_path, monkeypatch, capsys
+):
+    """没有 WORKFLOW_PAT：保持直接写 main，但必须明确告知无法预览。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path, bilingual=False)
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES) == 0
+    err = capsys.readouterr().err
+    assert "WORKFLOW_PAT" in err and "直接写入 main" in err
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "我手写的介绍，请完整保留" in readme  # 手写内容进 custom 区
+    assert "## 📊 统计信息" in readme  # 生成区照常落地
+    assert (tmp_path / "data" / "snapshot.json").exists()
+
+
+def test_takeover_dry_run_prints_and_never_calls_github(tmp_path, monkeypatch, capsys):
+    """dry-run 只打印渲染结果：不检测 PR、不推送、不写文件。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    http, client = _takeover_client()
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client, dry_run=True) == 0
+    assert http.requests == []
+    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
+
+
+def test_takeover_bilingual_false_pushes_two_files(tmp_path, monkeypatch):
+    """单语模式：PR 里只有 README.md + 快照，不凭空造 en 文件。"""
+    as_posix = lambda p: p.as_posix()  # noqa: E731
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"""
+github:
+  username: "alice"
+repos:
+  exclude: ["alice/old-profile"]
+readme:
+  path: "{as_posix(tmp_path / 'README.md')}"
+  template: "{as_posix(TEMPLATE)}"
+  bilingual: false
+snapshot:
+  path: "{as_posix(tmp_path / 'data' / 'snapshot.json')}"
+""",
+        encoding="utf-8",
+    )
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client()
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    tree_req = next(r for r in http.requests if r["url"].endswith("/git/trees"))
+    assert {e["path"] for e in tree_req["json"]["tree"]} == {
+        "README.md",
+        "data/snapshot.json",
+    }
+
+
+def test_takeover_uses_profile_repo_default_branch(tmp_path, monkeypatch, capsys):
+    """profile 仓库被 config 排除时，PR base 仍取真实默认分支（不是硬编码 main）。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client(repo_default_branch="trunk")
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    assert http.has("GET", f"/repos/{_OWNER}")
+    pr_req = next(r for r in http.requests if r["url"].endswith("/pulls") and r["method"] == "POST")
+    assert pr_req["json"]["base"] == "trunk"
+    assert "接管" in capsys.readouterr().out
+
+
+def test_after_takeover_pr_merged_next_round_is_noop(tmp_path, monkeypatch, capsys):
+    """PR 合并后的下一轮：盘上已是机器 README + 新快照 → 正常增量门直接 no-op。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    http, client = _takeover_client()
+    _takeover_ai(monkeypatch)
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+
+    blobs = [r for r in http.requests if r["url"].endswith("/git/blobs")]
+    (tmp_path / "README.md").write_text(blobs[0]["json"]["content"], encoding="utf-8")
+    (tmp_path / "README.en.md").write_text(blobs[1]["json"]["content"], encoding="utf-8")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "snapshot.json").write_text(
+        blobs[2]["json"]["content"], encoding="utf-8"
+    )
+
+    assert run(cfg, fixture=FIXTURES) == 0
+    assert "无变化，跳过更新" in capsys.readouterr().out
+
+
+def _open_pr_response() -> "object":
+    from fake_github import FakeResponse
+
+    return FakeResponse(
+        200, [{"number": 12, "html_url": "https://github.com/alice/alice/pull/12"}]
+    )
+
+
+def test_takeover_force_refreshes_open_pr_and_stays_off_main(
+    tmp_path, monkeypatch, capsys
+):
+    """--force + 已打开的接管 PR：刷新该 PR（不新建），main 一个字节都不动。"""
+    from fake_github import FakeResponse
+    from profile_agent.github_client import API
+
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    http, client = _takeover_client(prs_first=[_open_pr_response()] * 2)
+    http.add(
+        "PATCH",
+        f"{API}/repos/{_OWNER}/pulls/12",
+        FakeResponse(200, {"number": 12}),
+    )
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client, force=True) == 0
+
+    out = capsys.readouterr().out
+    assert "仍待合并" in out and "刷新" in out and "main 仍不改动" in out
+    assert "分支上手动改动会被覆盖" in out  # 覆盖风险必须说清
+    assert not any(
+        r["method"] == "POST" and r["url"].endswith("/pulls") for r in http.requests
+    )  # 刷新不新建 PR
+    assert http.has("PATCH", "/pulls/12")
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == before_zh
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+
+
+def test_takeover_force_refresh_failure_never_writes_main(
+    tmp_path, monkeypatch, capsys
+):
+    """刷新失败也不能绕过待审核的 PR 去写 main：只警告，下一轮重试。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path)
+    before_zh = (tmp_path / "README.md").read_text(encoding="utf-8")
+    http, client = _takeover_client(prs_first=[_open_pr_response()] * 2, blob_ok=False)
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client, force=True) == 0
+
+    err = capsys.readouterr().err
+    assert "main 未改动" in err and "自动重试" in err
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == before_zh
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+
+
+def test_takeover_push_failure_never_writes_main(tmp_path, monkeypatch, capsys):
+    """推送/开 PR 阶段失败（分支可能已推出去）：绝不回退写 main。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client(blob_ok=False)
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    err = capsys.readouterr().err
+    assert "main 未改动" in err and "自动重试" in err
+    assert not (tmp_path / "data" / "snapshot.json").exists()
+    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# 我的主页")
+
+
+def test_takeover_head_read_failure_falls_back_to_direct_write(
+    tmp_path, monkeypatch, capsys
+):
+    """连 HEAD 都读不到（什么都没推出去）：回退直接写 main 仍是安全的。"""
+    cfg = _write_config(tmp_path)
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client(with_commit_head=False)
+    _takeover_ai(monkeypatch)
+
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    err = capsys.readouterr().err
+    assert "回退直接写入 main" in err
+    assert (tmp_path / "data" / "snapshot.json").exists()
+    assert "我手写的介绍" in (tmp_path / "README.md").read_text(encoding="utf-8")
+
+
+def test_takeover_opens_gate_even_when_fingerprint_unchanged(tmp_path, monkeypatch):
+    """指纹完全没变也必须开门：否则第二次运行会 no-op，接管 PR 永远开不出来。"""
+    cfg = _write_config(tmp_path)
+    _takeover_ai(monkeypatch)
+    assert run(cfg, fixture=FIXTURES) == 0  # 正常首跑：机器 README + 快照
+    (tmp_path / "README.md").write_text(
+        "# 手写主页\n这是我后来换上的手写内容。\n", encoding="utf-8"
+    )
+    (tmp_path / "README.en.md").write_text(
+        "# Handwritten\nReplaced after the first run.\n", encoding="utf-8"
+    )
+
+    http, client = _takeover_client()
+    assert run(cfg, fixture=FIXTURES, b_client=client) == 0
+    assert http.has("POST", "/pulls")
+
+
+def test_after_takeover_merged_data_change_updates_normally(tmp_path, monkeypatch):
+    """合并后数据变化：不再走接管分支，按普通增量更新本地 README。"""
+    fx = _copy_fixture(tmp_path)
+    cfg = _desc_cfg(tmp_path, enabled=False)
+    _handwritten(tmp_path, bilingual=False)
+    http, client = _takeover_client()
+    _takeover_ai(monkeypatch)
+    assert run(cfg, fixture=fx, b_client=client) == 0
+
+    blobs = [r for r in http.requests if r["url"].endswith("/git/blobs")]
+    (tmp_path / "README.md").write_text(blobs[0]["json"]["content"], encoding="utf-8")
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "snapshot.json").write_text(
+        blobs[1]["json"]["content"], encoding="utf-8"
+    )
+
+    _bump_fixture(fx, "alice/cool-tool", pushed="2026-10-26T00:00:00Z", description="新的描述")
+    assert run(cfg, fixture=fx) == 0
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "新的描述" in readme
+    assert "我手写的介绍，请完整保留" in readme  # custom 区仍然保留
+
+
+def test_description_summary_has_single_heading(tmp_path, monkeypatch, capsys):
+    """仓库描述相关提示只占一个小节：### 仓库描述写回（警告与结果合并）。"""
+    import profile_agent.cli as cli_mod
+
+    from fake_github import FakeHttp
+    from profile_agent.github_client import GitHubClient
+
+    fx = _copy_fixture(tmp_path)
+    http = FakeHttp()
+    client = GitHubClient("pat", session=http, sleep=lambda _s: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    cfg = _desc_cfg(tmp_path)
+    assert run(cfg, fixture=fx, b_client=client) == 0  # 首轮：只记基线
+    _bump_fixture(fx, "alice/cool-tool", pushed="2026-11-01T00:00:00+00:00")
+    monkeypatch.setattr(
+        cli_mod, "generate_descriptions", lambda *a, **k: ({}, "生成失败（测试）")
+    )
+    summary = tmp_path / "step_summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert run(cfg, fixture=fx, b_client=client) == 0
+    text = summary.read_text(encoding="utf-8")
+    assert "### 仓库描述写回" in text
+    assert text.count("### 仓库描述") == 1  # 不再出现重复小节
+    assert "生成失败（测试）" in text
+
+
+def test_description_unchanged_then_next_round_is_noop(tmp_path, monkeypatch):
+    """生成结果与当前描述一致也算处理完：下一轮门关上，不再白烧一次批量 AI。"""
+    import profile_agent.cli as cli_mod
+
+    from fake_github import FakeHttp
+    from profile_agent.github_client import GitHubClient
+
+    fx = _copy_fixture(tmp_path)
+    http = FakeHttp()
+    client = GitHubClient("pat", session=http, sleep=lambda _s: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(cli_mod, "generate_bio", lambda *a, **k: ("简介", "", True))
+    cfg = _desc_cfg(tmp_path)
+    assert run(cfg, fixture=fx, b_client=client) == 0  # 首轮：只记基线
+    _bump_fixture(fx, "alice/cool-tool", pushed="2026-11-01T00:00:00+00:00")
+    calls = []
+
+    def gen(items, cfg_ai, **kw):
+        calls.append(items)
+        return {"alice/cool-tool": "一个很酷的工具"}, ""
+
+    monkeypatch.setattr(cli_mod, "generate_descriptions", gen)
+    assert run(cfg, fixture=fx, b_client=client) == 0
+    assert len(calls) == 1
+    assert http.writes() == []  # 无需改动：不 PATCH
+    monkeypatch.setattr(
+        cli_mod,
+        "generate_descriptions",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("无需改动后不应再调 AI")),
+    )
+    assert run(cfg, fixture=fx, b_client=client) == 0
