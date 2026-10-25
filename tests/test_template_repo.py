@@ -64,6 +64,20 @@ def test_readme_tells_existing_profile_repo_users_to_rename_first():
     assert "Settings → Rename" in text
 
 
+def test_readme_highlights_ai_as_differentiator():
+    """说明页要把「AI 写内容」放在首位：这是与只出统计卡/一次性生成工具的核心差异。
+
+    按功能条目（行首 emoji）比较，不能用裸 substring——「仓库统计」也出现在
+    标题下的定位句里，那会永远排在功能列表之前，断言就失去意义。
+    """
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "大多数同类工具" in text
+    lines = text.splitlines()
+    ai = next(i for i, line in enumerate(lines) if line.startswith("- 🤖"))
+    stats = next(i for i, line in enumerate(lines) if line.startswith("- 📊"))
+    assert ai < stats
+
+
 def test_removed_features_are_gone():
     """项目介绍等已下线功能不得残留在模板里。"""
     assert not (ROOT / "src" / "profile_agent" / "projects.py").exists()
