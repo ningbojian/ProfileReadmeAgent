@@ -1,5 +1,18 @@
 # 更新日志
 
+## 1.1.2（2026-10-27）
+
+**用户什么都不用做**，`@v1` 自动生效。
+
+### 修复
+
+- **OpenAI 兼容分支的报错不再丢原因**：以前只报 `401 Client Error`，服务商写在响应体里的原始消息（如 `Go requires a credential`）看不到；现在连响应体一起上报。
+- **`Go requires a credential` 不再被误判成「额度/计费」**：它表示这个地址不认这把凭据（典型是把个人 API key 打到了 CLI 的 `/zen/go` 路由），归到「凭据类型不匹配」，提示里给出正确端点。
+
+### 文档
+
+- OpenCode Go 的正确地址：DeepSeek 等用 `https://opencode.ai/inference/go/openai/v1`（`provider: "openai"`），Claude Haiku / MiniMax / Qwen 用 `https://opencode.ai/inference/go/anthropic`。**不要用 `https://opencode.ai/zen/go`**。
+
 ## 1.1.1（2026-10-27）
 
 **用户什么都不用做**，`@v1` 自动生效。

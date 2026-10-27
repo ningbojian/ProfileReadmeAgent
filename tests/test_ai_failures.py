@@ -31,6 +31,18 @@ def test_billing_message_wins_over_401_status():
     assert f.status == "401"
 
 
+def test_missing_credential_is_not_mistaken_for_billing():
+    """「Go requires a credential」是端点/凭据类型不对，不是余额不足——别让用户去充值。"""
+    exc = FakeStatusError(
+        "Error code: 401 - {'type': 'error', 'error': {'type': 'api_error', "
+        "'message': 'Upstream request failed: Go requires a credential'}}",
+        401,
+    )
+    f = ai_failures.classify(exc, "anthropic", "deepseek-v4.1-flash")
+    assert f.kind == "凭据类型不匹配"
+    assert "inference" in f.hint
+
+
 def test_missing_session_header_is_explained():
     exc = FakeStatusError(
         "Error code: 400 - MissingSessionID: Request is missing x-opencode-session",

@@ -52,6 +52,9 @@ ai:
   # 端点要求额外请求头时（如 OpenCode Go 的 x-opencode-session）：
   #   headers:
   #     x-opencode-session: "profile-agent"
+  #   OpenCode Go 地址：DeepSeek 等走 https://opencode.ai/inference/go/openai/v1（provider: "openai"），
+  #   Claude Haiku / MiniMax / Qwen 走 https://opencode.ai/inference/go/anthropic（provider: "anthropic"）。
+  #   不要用 https://opencode.ai/zen/go —— 那是 CLI 内部路由，不认个人 API key。
   provider: "anthropic"
   model: "claude-opus-5-5" # 降本可换 "claude-haiku-5-5"
   max_repos: 15 # 喂给模型的仓库数上限

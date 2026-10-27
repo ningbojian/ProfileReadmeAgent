@@ -51,6 +51,15 @@ def chat_text(
                 },
                 timeout=180,
             )
+            status = getattr(resp, "status_code", None)
+            if status and int(status) >= 400:
+                # requests 的 raise_for_status 只给「401 Client Error」，服务商的原始
+                # 原因（如 'Go requires a credential'）在响应体里，必须带出来才排得动错
+                err = RuntimeError(
+                    f"HTTP {status}: {str(getattr(resp, 'text', '') or '')[:400]}"
+                )
+                err.status_code = int(status)  # 让 ai_failures 显示真实状态码
+                raise err
             resp.raise_for_status()
         except Exception as exc:  # 记录后原样抛出：上层继续沿用缓存
             ai_failures.record(exc, cfg.provider, cfg.model)

@@ -177,6 +177,40 @@ def test_openai_provider_chat(monkeypatch):
     assert roles == ["system", "user"]
 
 
+def test_openai_provider_error_body_is_recorded(monkeypatch):
+    """OpenAI 兼容分支失败时，服务商的原始消息要进失败汇总（requests 默认只给状态码）。"""
+    from profile_agent import ai_failures
+
+    ai_failures.reset()
+
+    class FakeResp:
+        status_code = 401
+        text = '{"error":{"type":"server_error","message":"Upstream request failed: Go requires a credential"}}'
+
+        def raise_for_status(self):
+            raise AssertionError("状态码 >= 400 时应先带 body 报错")
+
+    monkeypatch.setenv("OPENCODE_KEY", "oc_sk_test")
+    cfg = AIConfig(
+        provider="openai",
+        base_url="https://opencode.ai/inference/go/openai/v1",
+        key_env="OPENCODE_KEY",
+        model="deepseek-v4.1-flash",
+    )
+    with pytest.raises(Exception, match="HTTP 401"):
+        generate_bio(
+            PAYLOAD, cfg,
+            input_hash="h", prev_hash="", prev_text="", prev_generated_at="",
+            http_post=lambda *a, **k: FakeResp(),
+        )
+    recorded = ai_failures.failures()
+    ai_failures.reset()
+    assert recorded, "失败应被记录"
+    assert "Go requires a credential" in recorded[0].detail
+    assert recorded[0].status == "401"
+    assert recorded[0].kind == "凭据类型不匹配"
+
+
 def test_openai_provider_reuses_fresh_bio_without_http(monkeypatch):
     called = []
     cfg = AIConfig(provider="openai", base_url="http://x", key_env="K")

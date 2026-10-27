@@ -20,8 +20,10 @@ _QUOTA_KEYS = (
     "credit",
     "billing",
     "payment",
-    "requires a cr",
 )
+# 「Go requires a credential」= 这个地址不认这种凭据（如把 API key 打到 CLI 的 /zen 路由），
+# 不是没钱——别让用户去充值
+_CREDENTIAL_KEYS = ("requires a credential",)
 _SESSION_KEYS = ("missingsessionid", "x-opencode-session")
 _NETWORK_KEYS = ("timed out", "timeout", "connection", "network", "connect error")
 
@@ -62,6 +64,12 @@ def classify(exc: Exception, provider: str, model: str) -> AIFailure:
         hint = (
             "服务商要求额外请求头（如 x-opencode-session）；"
             "在 config.yaml 的 ai.headers 里补上后重跑"
+        )
+    elif any(k in low for k in _CREDENTIAL_KEYS):
+        kind = "凭据类型不匹配"
+        hint = (
+            "该地址不接受这把凭据：OpenCode 的个人 API key（oc_sk_…）只能走 "
+            "https://opencode.ai/inference/go/<openai|anthropic> 端点；检查 ai.base_url 与 key 是否配套"
         )
     elif any(k in low for k in _QUOTA_KEYS):
         kind = "额度/计费"
