@@ -35,9 +35,11 @@ def chat_text(
 
         post = http_post or requests.post
         key = os.environ.get(cfg.key_env_name) or ""
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        headers.update(cfg.headers)
         resp = post(
             f"{cfg.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers=headers,
             json={
                 "model": cfg.model,
                 "messages": [
@@ -62,6 +64,9 @@ def chat_text(
         key = os.environ.get(cfg.key_env_name)
         if key:
             kwargs["api_key"] = key
+        if cfg.headers:
+            # OpenCode Go 等端点要求额外请求头（如 x-opencode-session），交给 SDK 统一带上
+            kwargs["default_headers"] = dict(cfg.headers)
         client = anthropic.Anthropic(**kwargs)
     message = client.messages.create(
         model=cfg.model,

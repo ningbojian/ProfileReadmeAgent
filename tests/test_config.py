@@ -269,6 +269,30 @@ def test_readme_sections_default_all_on(tmp_path):
     assert (s.bio, s.stats, s.pinned, s.table) == (True, True, True, True)
 
 
+# ---- ai.headers 自定义请求头（2026-10-27，OpenCode Go 需要 x-opencode-session）----
+
+
+def test_ai_headers_parsed(tmp_path):
+    path = _write(
+        tmp_path,
+        'github:\n  username: "alice"\nai:\n  headers:\n'
+        '    x-opencode-session: "profile-agent"\n',
+    )
+    assert load_config(path).ai.headers == {"x-opencode-session": "profile-agent"}
+
+
+def test_ai_headers_default_empty(tmp_path):
+    path = _write(tmp_path, 'github:\n  username: "alice"\n')
+    assert load_config(path).ai.headers == {}
+
+
+def test_ai_headers_rejects_non_mapping(tmp_path):
+    path = _write(tmp_path, 'github:\n  username: "alice"\nai:\n  headers: "abc"\n')
+    with pytest.raises(ConfigError, match="headers"):
+        load_config(path)
+
+
+
 def test_readme_sections_overrides_respected(tmp_path):
     path = _write(
         tmp_path,

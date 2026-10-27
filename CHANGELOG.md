@@ -1,5 +1,28 @@
 # 更新日志
 
+## 1.1.0（2026-10-27）
+
+**用户默认什么都不用做**；接 OpenCode Go 的加两行 `ai.headers`（见下）。
+
+### 新增
+
+- **`ai.headers`**：给 AI 请求附加自定义请求头，`anthropic` / `openai` 两种 provider 都会带上。
+- **OpenCode Go 支持**：它要求 `x-opencode-session`，缺失直接返回 `MissingSessionID`。配置：
+
+  ```yaml
+  ai:
+    provider: "anthropic"
+    base_url: "https://opencode.ai/zen/go"
+    key_env: "AI_API_KEY"
+    model: "deepseek-v4.1-flash"
+    headers:
+      x-opencode-session: "profile-agent"
+  ```
+
+### 兼容性
+
+- 不写 `headers` 时行为与 1.0.0 完全一致，现有配置零改动。
+
 ## 1.0.0（2026-10-25）
 
 首个可复用 workflow 版本。**旧模板副本需要迁移一次**（见下），之后自动收更新。

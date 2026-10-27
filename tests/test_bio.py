@@ -229,6 +229,76 @@ def test_anthropic_custom_base_url_and_key_env(monkeypatch):
     assert captured["create"]["model"] == "mimo-v2.6-flash"
 
 
+# ---- ai.headers 自定义请求头（2026-10-27，OpenCode Go 缺少 x-opencode-session 会被拒）----
+
+
+def test_anthropic_passes_custom_headers(monkeypatch):
+    import sys
+    import types
+
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            return SimpleNamespace(content=[_block("带自定义请求头的简介")])
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+            self.messages = FakeMessages()
+
+    fake_sdk = types.ModuleType("anthropic")
+    fake_sdk.Anthropic = FakeAnthropic
+    monkeypatch.setitem(sys.modules, "anthropic", fake_sdk)
+    monkeypatch.setenv("AI_API_KEY", "zen-key")
+
+    cfg = AIConfig(
+        provider="anthropic",
+        base_url="https://opencode.ai/zen/go",
+        key_env="AI_API_KEY",
+        model="deepseek-v4.1-flash",
+        headers={"x-opencode-session": "profile-agent"},
+    )
+    text, _en, generated = generate_bio(
+        PAYLOAD, cfg,
+        input_hash="h", prev_hash="", prev_text="", prev_generated_at="",
+    )
+    assert generated is True and "自定义请求头" in text
+    assert captured["init"]["default_headers"] == {"x-opencode-session": "profile-agent"}
+
+
+def test_openai_merges_custom_headers(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OpenAI 通道简介"}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["headers"] = headers
+        return FakeResp()
+
+    monkeypatch.setenv("AI_API_KEY", "zen-key")
+    cfg = AIConfig(
+        provider="openai",
+        base_url="https://opencode.ai/zen/go/v1",
+        key_env="AI_API_KEY",
+        model="deepseek-v4.1-flash",
+        headers={"x-opencode-session": "profile-agent"},
+    )
+    text, _en, generated = generate_bio(
+        PAYLOAD, cfg,
+        input_hash="h2", prev_hash="", prev_text="", prev_generated_at="",
+        http_post=fake_post,
+    )
+    assert generated is True and "OpenAI 通道" in text
+    assert captured["headers"]["x-opencode-session"] == "profile-agent"
+    assert captured["headers"]["Authorization"] == "Bearer zen-key"
+
+
 # ============================ WP4 双语 AI（2026-10-23） ============================
 
 

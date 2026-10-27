@@ -83,6 +83,8 @@ class AIConfig:
     # 2：2026-10-24 移除简介末尾「亮点：」小节（与置顶项目/仓库列表重复）
     prompt_version: int = 2
     fill_empty_descriptions: bool = True  # 精选仓库缺描述时用 AI 基于其 README 生成主页补位文案
+    # 额外请求头（如 OpenCode Go 必填的 x-opencode-session）；两种 provider 都会带上
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def key_env_name(self) -> str:
@@ -270,6 +272,12 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         raise ConfigError(
             f'ai.language 目前只支持 "zh-CN"（输出语言由 readme.bilingual 控制），收到：{language}'
         )
+    raw_headers = ai.get("headers") or {}
+    if not isinstance(raw_headers, dict):
+        raise ConfigError(
+            'ai.headers 必须是「请求头名: 值」的映射，如 {"x-opencode-session": "profile-agent"}'
+        )
+    headers = {str(k): str(v) for k, v in raw_headers.items()}
     cfg.ai = AIConfig(
         enabled=bool(ai.get("enabled", True)),
         provider=provider,
@@ -283,6 +291,7 @@ def load_config(path: Path, *, fallback_username: str | None = None) -> Config:
         language=language,
         prompt_version=int(ai.get("prompt_version", 2)),
         fill_empty_descriptions=bool(ai.get("fill_empty_descriptions", True)),
+        headers=headers,
     )
 
     # 有意变更（A-P0）：项目介绍功能已移除——用户 config 残留的 projects: 段

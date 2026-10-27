@@ -93,7 +93,7 @@ profile-agent --fixture /path/to/ProfileReadmeAgent/tests/fixtures --no-ai --dry
 
 环境变量：`GITHUB_TOKEN`（可选，不填走匿名配额 60 次/小时；建议去 GitHub → Settings → Developer settings 生成一个 classic PAT）、AI key（见下一节，名字由 `ai.key_env` 决定，默认 `ANTHROPIC_API_KEY`）。
 
-## 换用其他模型（DeepSeek / 千问 / Kimi / MiMo / Ollama）
+## 换用其他模型（DeepSeek / 千问 / Kimi / MiMo / OpenCode Go / Ollama）
 
 AI 后端支持两种 provider：
 
@@ -117,9 +117,18 @@ ai:
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | MiMo（小米） | 保持 `provider: "anthropic"` + `base_url: https://api.xiaomimimo.com/anthropic` | `mimo-v2.6-flash` |
+| OpenCode Go | 保持 `provider: "anthropic"` + `base_url: https://opencode.ai/zen/go` + `headers: {x-opencode-session: "profile-agent"}` | `deepseek-v4.1-flash` |
 | Ollama（本地，免费） | `http://localhost:11434/v1` | `qwen2.5:7b` 等 |
 
 改完配置，在 Secrets 里添加对应名字的 key（如 `DEEPSEEK_API_KEY`），然后手动触发一次 force 即可。数据没变化时不会调用任何模型，换 provider 不会产生额外开销。
+
+**需要额外请求头的端点**（如 OpenCode Go 缺 `x-opencode-session` 会直接返回 `MissingSessionID`）：在 `ai` 段加 `headers`，两种 provider 都会带上。
+
+```yaml
+ai:
+  headers:
+    x-opencode-session: "profile-agent"   # 值只要稳定即可，用来优化路由与缓存
+```
 
 ## 控制开销（重要）
 

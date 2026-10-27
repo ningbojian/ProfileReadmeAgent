@@ -49,6 +49,9 @@ ai:
   #   base_url: "https://api.deepseek.com"   ← 服务商地址（通常含 /v1）
   #   key_env: "AI_API_KEY"                 ← secret 名字（workflow 已内置注入，建议就叫这个）
   #   model: "deepseek-chat"                ← 服务商文档里的模型名
+  # 端点要求额外请求头时（如 OpenCode Go 的 x-opencode-session）：
+  #   headers:
+  #     x-opencode-session: "profile-agent"
   provider: "anthropic"
   model: "claude-opus-5-5" # 降本可换 "claude-haiku-5-5"
   max_repos: 15 # 喂给模型的仓库数上限
