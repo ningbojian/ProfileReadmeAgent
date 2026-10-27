@@ -496,6 +496,37 @@ def test_fetch_head_404_isolated_and_status_honest(tmp_path, capsys):
     assert fetchers.head_calls == PARTICIPANTS  # 坏仓抛错后仍继续查其余仓
 
 
+def test_many_404s_hint_classic_token(tmp_path, capsys):
+    """多个仓库同时 404 → 摘要提示令牌类型。
+
+    fine-grained 令牌对「未勾选仓库」一律返回 404，看起来像仓库不存在；
+    真实原因是 WORKFLOW_PAT 类型不对，不提示就会被误判成工具故障。
+    """
+    from profile_agent.github_client import GitHubError
+
+    cfg = _write_config(tmp_path)
+    assert _run(cfg, FakeFetchers(heads=_heads_all())) == 0
+
+    path = tmp_path / "data" / "snapshot.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for fn in ("alice/cool-tool", "alice/old-thing"):
+        data["repo_readmes"][fn]["pending"] = True
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    class Many404Fetchers(FakeFetchers):
+        def fetch_head(self, full_name):
+            self.head_calls.append(full_name)
+            if full_name in ("alice/cool-tool", "alice/old-thing"):
+                raise GitHubError("GitHub API 返回 404：用户不存在或仓库不可见")
+            return self.heads[full_name]
+
+    capsys.readouterr()
+    assert _run(cfg, Many404Fetchers(heads=_heads_all())) == 0
+    out = capsys.readouterr().out
+    assert "模式 B 状态" in out
+    assert "classic" in out and "WORKFLOW_PAT" in out
+
+
 def test_whole_b_crash_shows_failure_not_noop(tmp_path, monkeypatch, capsys):
     """整体（非逐仓）失败：_save_b_snapshot 落盘抛错 → 状态行写「整体失败」而非
     「无事可做」，且模式 A 不受影响、退出码 0。"""

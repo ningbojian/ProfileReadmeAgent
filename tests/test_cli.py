@@ -1842,3 +1842,39 @@ def test_custom_template_path_always_uses_local_file(tmp_path, monkeypatch, caps
     out = capsys.readouterr().out
     assert "CUSTOM-TEMPLATE-MARKER" in out
     assert "统计信息" not in out
+
+
+# ---- AI 失败显式上报（2026-10-27：额度/认证问题不能装成工具故障）----
+
+
+def test_report_ai_failures_writes_summary_and_warning(tmp_path, monkeypatch, capsys):
+    from profile_agent import ai_failures, cli
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    ai_failures.reset()
+
+    class QuotaError(Exception):
+        status_code = 402
+
+    ai_failures.record(QuotaError("Insufficient account balance"), "anthropic", "deepseek-v4.1-flash")
+    cli._report_ai_failures()
+
+    text = summary.read_text(encoding="utf-8")
+    assert "AI 调用失败" in text
+    assert "额度/计费" in text
+    assert "不是本工具" in text
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "额度" in out
+
+
+def test_report_ai_failures_silent_when_clean(tmp_path, monkeypatch, capsys):
+    from profile_agent import ai_failures, cli
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    ai_failures.reset()
+    cli._report_ai_failures()
+
+    assert not summary.exists() or summary.read_text(encoding="utf-8") == ""
+    assert "::warning::" not in capsys.readouterr().out

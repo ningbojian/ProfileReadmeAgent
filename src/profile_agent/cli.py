@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import ai_failures
 from .aggregate import (
     bio_input_hash,
     build_bio_payload,
@@ -233,6 +234,35 @@ def _b_status_line(stats: dict, reason: str = "") -> str:
     return "模式 B 状态：" + body
 
 
+def _pat_404_hint(stats: dict) -> str:
+    """404 占多数时的令牌提示：fine-grained 令牌对未勾选仓库一律返回 404。
+
+    真实原因常常是令牌类型不对，而不是仓库不存在——不提示就会被当成工具故障。
+    """
+    not_found = int(stats.get("not_found") or 0)
+    errors = int(stats.get("error") or 0)
+    if not_found < 2 or not_found * 2 < errors:
+        return ""
+    return (
+        "⚠️ 读取失败多为 404：fine-grained 令牌对未勾选仓库一律返回 404；"
+        "WORKFLOW_PAT 请用 classic 令牌并勾选 repo + workflow"
+    )
+
+
+def _report_ai_failures() -> None:
+    """运行结束时统一播报 AI 服务商侧失败（额度/认证/请求头/限流）。
+
+    这类失败会静默降级成「沿用缓存」，不显式说明就会被误当成工具本身的毛病。
+    """
+    if not ai_failures.failures():
+        return
+    block = ai_failures.summary_markdown()
+    _append_summary(block)
+    print(block)
+    for line in ai_failures.annotations():
+        print(line)
+
+
 def _b_repo_progress(r) -> str:
     """单仓进度描述（OR20 逐仓进度行；与 ProcessResult.status 一一对应）。"""
     return {
@@ -286,6 +316,7 @@ def run(
     now_fn=None,
     sleep_fn=None,
 ) -> int:
+    ai_failures.reset()  # 每轮开始清空：进程内可能跑多轮（测试/连续本地运行）
     fallback = os.environ.get("GITHUB_REPOSITORY_OWNER")
     try:
         cfg: Config = load_config(cfg_path, fallback_username=fallback)
@@ -898,6 +929,10 @@ def run(
     status_line = _b_status_line(b_stats, b_reason)
     print(status_line)
     _append_summary(f"- {status_line}")
+    pat_hint = _pat_404_hint(b_stats)
+    if pat_hint:
+        print(pat_hint)
+        _append_summary(f"- {pat_hint}")
 
     # 3.6 清单/通知 + 等待（§4-2/§4-3）：有 open PR 才动 issue；等待仅勾选且非空时执行
     # （issue_eff 已在开局解析；issue_cached 为钩子①的预取——省一次搜索，条件同款）
@@ -1622,7 +1657,7 @@ def main(argv: list[str] | None = None) -> int:
     merge_wait = 30.0 if args.wait_for_merges else 0.0
     if args.merge_wait_minutes is not None:
         merge_wait = args.merge_wait_minutes
-    return run(
+    rc = run(
         Path(args.config),
         dry_run=args.dry_run,
         force=args.force,
@@ -1632,6 +1667,9 @@ def main(argv: list[str] | None = None) -> int:
         b_force=args.repo_readmes,
         merge_wait_minutes=merge_wait,
     )
+    # 所有退出路径统一播报：AI 额度/认证问题必须显式可见（不改变退出码）
+    _report_ai_failures()
+    return rc
 
 
 if __name__ == "__main__":

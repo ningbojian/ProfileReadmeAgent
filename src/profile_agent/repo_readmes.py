@@ -121,7 +121,15 @@ def compute_queue(
     五个计数——cli 用它输出「模式 B 状态」行（设计 §8①，静默必须有可读原因）。
     """
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
-    counts = {"queued": 0, "first_seen": 0, "readme_only": 0, "no_change": 0, "reset": 0, "error": 0}
+    counts = {
+        "queued": 0,
+        "first_seen": 0,
+        "readme_only": 0,
+        "no_change": 0,
+        "reset": 0,
+        "error": 0,
+        "not_found": 0,  # 其中 404 的数量：用来判断是不是令牌类型不对
+    }
     queue: list[QueueItem] = []
     for full_name in participants(repos, cfg, username):
         # 逐仓隔离：一仓 head/compare 读取失败（如 PAT 对该仓 404 不可见）只跳过该仓，
@@ -201,6 +209,8 @@ def compute_queue(
             )
         except Exception as exc:  # noqa: BLE001 —— 逐仓隔离，不跨仓传播（生产 404 事故回归）
             counts["error"] += 1
+            if "404" in str(exc):
+                counts["not_found"] += 1
             print(
                 f"「{full_name}」读取失败（本轮跳过，不影响其他仓库）：{exc}",
                 file=sys.stderr,

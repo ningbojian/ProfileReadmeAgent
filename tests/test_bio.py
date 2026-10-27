@@ -423,3 +423,30 @@ def test_bio_english_with_a_chinese_section_is_discarded(capsys):
     assert generated is True
     assert got_en == ""
     assert "英文版" in capsys.readouterr().err
+
+
+def test_ai_failure_is_recorded_for_run_summary():
+    """服务商失败（余额/认证）必须被记录，供运行摘要显式提示——不能只留一行 stderr。"""
+    from profile_agent import ai_failures
+
+    ai_failures.reset()
+
+    class BoomClient:
+        class messages:
+            @staticmethod
+            def create(**kwargs):
+                raise RuntimeError("Insufficient account balance")
+
+    with pytest.raises(BioError):
+        generate_bio(
+            PAYLOAD,
+            AIConfig(),
+            input_hash="h",
+            prev_hash="",
+            prev_text="",
+            prev_generated_at="",
+            client=BoomClient(),
+        )
+    recorded = ai_failures.failures()
+    assert len(recorded) == 1
+    assert recorded[0].kind == "额度/计费"

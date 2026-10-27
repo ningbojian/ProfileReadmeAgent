@@ -6,6 +6,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
+from . import ai_failures
 from .config import AIConfig
 from .text_lang import language_mismatch
 
@@ -37,19 +38,23 @@ def chat_text(
         key = os.environ.get(cfg.key_env_name) or ""
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         headers.update(cfg.headers)
-        resp = post(
-            f"{cfg.base_url}/chat/completions",
-            headers=headers,
-            json={
-                "model": cfg.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ],
-            },
-            timeout=180,
-        )
-        resp.raise_for_status()
+        try:
+            resp = post(
+                f"{cfg.base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": cfg.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ],
+                },
+                timeout=180,
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # 记录后原样抛出：上层继续沿用缓存
+            ai_failures.record(exc, cfg.provider, cfg.model)
+            raise
         return str(resp.json()["choices"][0]["message"]["content"] or "")
 
     if client is None:
@@ -68,12 +73,16 @@ def chat_text(
             # OpenCode Go 等端点要求额外请求头（如 x-opencode-session），交给 SDK 统一带上
             kwargs["default_headers"] = dict(cfg.headers)
         client = anthropic.Anthropic(**kwargs)
-    message = client.messages.create(
-        model=cfg.model,
-        max_tokens=4096,
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-    )
+    try:
+        message = client.messages.create(
+            model=cfg.model,
+            max_tokens=4096,
+            system=system,
+            messages=[{"role": "user", "content": user_content}],
+        )
+    except Exception as exc:  # 记录后原样抛出：上层继续沿用缓存
+        ai_failures.record(exc, cfg.provider, cfg.model)
+        raise
     return extract_text(message.content)
 
 
