@@ -25,6 +25,8 @@ _ENTRY_RE = re.compile(
 
 # 「全部合并」总开关锚点：隐藏 token（用户改措辞不丢语义），见 build_checklist_body
 _MERGE_ALL_RE = re.compile(r"^- \[[xX]\] .*?<!--\s*merge-all\s*-->")
+# 任意勾选态的总开关行：全选联动改写用（_MERGE_ALL_RE 只认已勾选）
+_MERGE_ALL_ANY_RE = re.compile(r"^- \[([ xX])\] .*?<!--\s*merge-all\s*-->")
 
 
 def _parse_entries(body: str) -> list[tuple[str, int, bool]]:
@@ -57,6 +59,84 @@ def parse_merge_targets(body: str) -> list[tuple[str, int]]:
     if merge_all:
         return [(cf, cn) for cf, cn, _ in entries]
     return [(cf, cn) for cf, cn, ticked in entries if ticked]
+
+
+def _master_state(body: str) -> bool | None:
+    """总开关是否勾选；body 里没有总开关行时返回 None。"""
+    for line in (body or "").splitlines():
+        if _MERGE_ALL_ANY_RE.match(line.strip()):
+            return line.strip()[3] in "xX"
+    return None
+
+
+def _set_checkbox(line: str, checked: bool) -> str:
+    """只改行的勾选态，其余字节（缩进、链接、结尾换行）原样保留。"""
+    m = re.match(r"^(\s*-\s+\[)([ xX])(\])", line)
+    if not m:
+        return line
+    return f"{m.group(1)}{'x' if checked else ' '}{line[m.end(2):]}"
+
+
+def sync_merge_all(old_body: str, new_body: str) -> str:
+    """把「全部合并」与条目复选框同步成一致状态（2026-10-27 全选联动）。
+
+    用户在 issue 里勾选只产生一次 body 编辑，这里靠 old/new 两份 body 判断
+    「谁被点了」：
+
+    - 总开关态变了（用户刚点全选/取消全选）→ 全部条目跟随；
+    - 总开关没变（用户点了某一条）→ 只回写总开关 = 是否每条都勾上，
+      其余条目保持用户刚点的样子（取消一条不会连带取消别的）。
+
+    与勾选无关的编辑返回原 body；结果一致不产生新编辑（幂等，防 bot 自触发）。
+    """
+    old_master = _master_state(old_body)
+    new_master = _master_state(new_body)
+    if old_master is None or new_master is None:
+        return new_body
+    entries = [ln for ln in new_body.splitlines() if _ENTRY_RE.match(ln.strip())]
+    if not entries:
+        return new_body
+
+    if new_master != old_master:
+        entries_target: bool | None = new_master  # 全选/取消：条目跟随
+        master_target = new_master
+    else:
+        entries_target = None  # 只动了某一条：条目保持原样
+        master_target = all(ln.strip()[3] in "xX" for ln in entries)
+
+    out: list[str] = []
+    for line in new_body.splitlines(keepends=True):
+        stripped = line.strip()
+        if _MERGE_ALL_ANY_RE.match(stripped):
+            if master_target != (stripped[3] in "xX"):
+                line = _set_checkbox(line, master_target)
+        elif entries_target is not None and _ENTRY_RE.match(stripped):
+            if entries_target != (stripped[3] in "xX"):
+                line = _set_checkbox(line, entries_target)
+        out.append(line)
+    return "".join(out)
+
+
+def sync_from_issue_event(event: dict, client: GitHubClient) -> bool:
+    """处理 issues.edited 事件：把清单勾选同步回 GitHub；返回是否真的改写了。
+
+    只做排版联动，不合并、不读快照。异常向上抛，由 cli 降级成 warning
+    （同步失败不能让工作流变红）。
+    """
+    if not isinstance(event, dict) or event.get("action") != "edited":
+        return False
+    issue = event.get("issue") or {}
+    new_body = issue.get("body")
+    old_body = ((event.get("changes") or {}).get("body") or {}).get("from")
+    number = issue.get("number")
+    repo = (event.get("repository") or {}).get("full_name")
+    if not old_body or new_body is None or not number or not repo:
+        return False
+    updated = sync_merge_all(str(old_body), str(new_body))
+    if updated == new_body:
+        return False
+    client._patch(f"{API}/repos/{repo}/issues/{number}", {"body": updated})
+    return True
 
 
 def find_checklist_issue(client: GitHubClient, owner_repo: str) -> dict | None:
@@ -117,8 +197,8 @@ def build_checklist_body(
         # （用户改措辞也不丢语义），且不含 PR 链接——绝不被当成普通条目；
         # 写明「下次运行时合并、只合并清单现存条目」（生效时机 + 范围，不夸大）
         lines.append(
-            "- [ ] 全部合并：勾这里 = 下次运行时一次合并下面全部现存条目；"
-            "要挑着来就逐条勾<!-- merge-all -->"
+            "- [ ] 全部合并：勾这里 = 下面全部条目一起勾上（取消勾选 = 一起取消），"
+            "下次运行时一并合并；也可以逐条勾<!-- merge-all -->"
         )
     for pr in open_prs:
         full = str(pr.get("full_name") or "")

@@ -43,10 +43,16 @@ on:
           - 每 3 天
           - 每 5 天
           - 每 7 天
+  # 清单勾选联动（2026-10-27）：在清单 issue 里勾/取消「全部合并」或改动某一条时，
+  # 同步总开关与各条目。只改正文排版，不跑更新（可复用 workflow 里走 sync-checklist）。
+  issues:
+    types: [edited]
 
 # 防止定时与手动同时运行；不取消进行中的运行
 concurrency:
-  group: update-profile
+  # 清单同步单独排队：否则会排在正在等待合并（最长 30 分钟）的更新任务后面，
+  # 看起来像「勾了没反应」
+  group: ${{ github.event_name == 'issues' && 'update-profile-sync' || 'update-profile' }}
   cancel-in-progress: false
 
 permissions:

@@ -27,11 +27,40 @@ def _caller() -> dict:
 
 
 def test_workflow_skips_template_repo_itself():
-    """模板仓库自身永不运行：否则说明页会被当成个人主页改写。"""
+    """模板仓库自身永不运行：否则说明页会被当成个人主页改写。
+
+    2026-10-27 追加 `&& inputs.trigger_event != 'issues'`：清单勾选同步是独立 job，
+    issue 编辑事件绝不能再跑一整轮更新。
+    """
     wf = _workflow()
     assert wf["jobs"]["update"]["if"] == (
-        "github.repository != 'ningbojian/ProfileReadmeAgent'"
+        "github.repository != 'ningbojian/ProfileReadmeAgent' "
+        "&& inputs.trigger_event != 'issues'"
     )
+
+
+def test_reusable_syncs_checklist_on_issue_edit_only():
+    """issue 编辑事件只走 sync-checklist job，且只做排版同步、不跑更新。
+
+    GitHub 的 markdown 任务列表没有原生父子联动，勾「全部合并」带动下面全部条目
+    只能靠 issues.edited 事件回写正文；同步只改 body，不合并、不读快照。
+    """
+    jobs = _workflow()["jobs"]
+    sync = jobs["sync-checklist"]
+    assert "inputs.trigger_event == 'issues'" in sync["if"]
+    assert "ningbojian/ProfileReadmeAgent" in sync["if"]  # 模板仓库同样不跑
+    text = " ".join(
+        str(s.get("run") or "") for s in sync["steps"]
+    )
+    assert "--sync-checklist" in text
+    assert "profile_agent --config config.yaml" in text
+    # 用内置令牌发起的编辑不会再触发 workflow（GitHub 防循环）
+    envs = [s.get("env") or {} for s in sync["steps"]]
+    assert any(e.get("GITHUB_TOKEN") == "${{ github.token }}" for e in envs)
+    # 配置与工具代码分别来自两个检出（同 update job 的检出模式）
+    checkouts = [s for s in sync["steps"] if str(s.get("uses", "")).startswith("actions/checkout")]
+    assert len(checkouts) == 2
+    assert checkouts[1]["with"]["path"] == ".profile-agent"
 
 
 def test_template_readme_is_machine_mode_so_first_run_replaces_it():

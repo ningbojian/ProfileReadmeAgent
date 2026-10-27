@@ -50,9 +50,38 @@ permissions:
   issues: write # 模式 B 清单 issue 用内置 GITHUB_TOKEN 开/改/关（§5.7）
 
 jobs:
+  # 清单勾选联动（2026-10-27）：用户点「全部合并」/取消，或改动某一条时，把总开关与
+  # 各条目同步成一致状态。GitHub 的 markdown 任务列表没有原生父子联动，只能在
+  # issues.edited 事件里补写；只改正文排版，不合并、不跑更新。
+  sync-checklist:
+    # 模板仓库自身不跑（同 update：用户的清单 issue 只存在用户仓库里）
+    if: github.repository != 'ningbojian/ProfileReadmeAgent' && inputs.trigger_event == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .profile-agent
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .profile-agent/pyproject.toml
+      - name: 安装依赖（工具仓库检出版本）
+        run: pip install -e ./.profile-agent
+      - name: 同步清单勾选
+        env:
+          # 内置令牌发起的编辑不会再次触发 workflow（GitHub 防循环），
+          # 所以回写 body 不会自激；issues: write 已在顶层 permissions 里
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m profile_agent --config config.yaml --sync-checklist
+
   update:
     # 模板仓库自身永不运行：它的 README 是给用户看的说明页，不是个人主页
-    if: github.repository != 'ningbojian/ProfileReadmeAgent'
+    # issue 编辑只走上面的 sync-checklist，不跑整轮更新
+    if: github.repository != 'ningbojian/ProfileReadmeAgent' && inputs.trigger_event != 'issues'
     runs-on: ubuntu-latest
     steps:
       # 先检出调用方仓库（配置、README、快照都来自这里）

@@ -1998,3 +1998,89 @@ def test_fetch_compare_404_becomes_compare_gone():
 
     with pytest.raises(CompareGone):
         _fetchers_from_client(FakeClient()).fetch_compare("alice/x", "aaa", "bbb")
+
+
+# ---- 清单全选联动（issues.edited 事件入口）----
+
+_SYNC_BODY = (
+    "## 🔔 README 更新待合并清单\n"
+    "- [ ] 全部合并：说明<!-- merge-all -->\n"
+    "- [ ] a：[PR](https://github.com/alice/a/pull/1)\n"
+    "- [ ] b：[PR](https://github.com/alice/b/pull/2)\n"
+)
+
+
+def _sync_event(old: str, new: str) -> dict:
+    return {
+        "action": "edited",
+        "issue": {"number": 15, "body": new},
+        "changes": {"body": {"from": old}},
+        "repository": {"full_name": "alice/alice"},
+    }
+
+
+def test_sync_checklist_from_env_patches_on_master_toggle(tmp_path, monkeypatch):
+    from profile_agent.cli import sync_checklist_from_env
+
+    cfg = _write_config(tmp_path)
+    old = _SYNC_BODY
+    new = old.replace("- [ ] 全部合并", "- [x] 全部合并")
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(_sync_event(old, new)), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+
+    calls = []
+
+    class FakeClient:
+        def __init__(self, token=None, **kw):
+            self.token = token
+
+        def _patch(self, url, payload, **kw):
+            calls.append((url, payload))
+            return {}, {}
+
+    monkeypatch.setattr("profile_agent.cli.GitHubClient", FakeClient)
+    assert sync_checklist_from_env(cfg) == 0
+    assert len(calls) == 1
+    body = calls[0][1]["body"]
+    assert body.count("- [x]") == 3  # 总开关 + 两条条目
+
+
+def test_sync_checklist_from_env_ignores_other_events(tmp_path, monkeypatch):
+    from profile_agent.cli import sync_checklist_from_env
+
+    cfg = _write_config(tmp_path)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "nope.json"))
+
+    def boom(*a, **k):
+        raise AssertionError("非 issues 事件不该构造客户端")
+
+    monkeypatch.setattr("profile_agent.cli.GitHubClient", boom)
+    assert sync_checklist_from_env(cfg) == 0
+
+
+def test_sync_checklist_from_env_degrades_to_warning(tmp_path, monkeypatch, capsys):
+    """同步失败只告警、返回 0：排版问题不能让工作流变红。"""
+    from profile_agent.cli import sync_checklist_from_env
+    from profile_agent.github_client import GitHubError
+
+    cfg = _write_config(tmp_path)
+    old = _SYNC_BODY
+    new = old.replace("- [ ] 全部合并", "- [x] 全部合并")
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(_sync_event(old, new)), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+
+    class FakeClient:
+        def __init__(self, token=None, **kw):
+            pass
+
+        def _patch(self, url, payload, **kw):
+            raise GitHubError("boom")
+
+    monkeypatch.setattr("profile_agent.cli.GitHubClient", FakeClient)
+    assert sync_checklist_from_env(cfg) == 0
+    assert "::warning::" in capsys.readouterr().err

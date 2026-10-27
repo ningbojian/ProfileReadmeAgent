@@ -252,3 +252,28 @@ def test_wf_has_no_projects_or_named_repo_traces():
         text = path.read_text(encoding="utf-8")
         for token in ("docs/projects", "--repos", "repo_inputs", "项目介绍", "steps.resolve"):
             assert token not in text, f"{path.name} 残留项目介绍痕迹：{token}"
+
+
+# ---- 清单勾选联动（2026-10-27：勾「全部合并」带动全部条目）----
+
+
+def test_wf_caller_triggers_on_issue_edit():
+    """调用文件必须接 issues.edited：没有这个触发器，checkbox 联动无从发生。
+
+    老用户不改调用文件时不会报错——运行时「总开关 = 全合并」的语义仍在，
+    只是少了勾选联动（guide 的升级说明里写明）。
+    """
+    assert _wf()["issues"] == {"types": ["edited"]}
+
+
+def test_wf_issue_sync_has_own_concurrency_group():
+    """清单同步单独占一个 concurrency 组，不排在等待合并（最长 30 分钟）之后。
+
+    否则用户勾了「全部合并」，同步任务排在 Queued 里迟迟不跑，看起来像没生效。
+    """
+    raw = yaml.safe_load(CALLER.read_text(encoding="utf-8"))
+    group = raw["concurrency"]["group"]
+    assert "github.event_name == 'issues'" in group
+    assert "'update-profile-sync'" in group
+    assert "'update-profile'" in group
+    assert raw["concurrency"]["cancel-in-progress"] is False

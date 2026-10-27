@@ -29,6 +29,7 @@ from .checklist import (
     find_checklist_issue,
     get_issue,
     parse_merge_targets,
+    sync_from_issue_event,
     update_checklist,
 )
 from .config import Config, ConfigError, load_config
@@ -1703,6 +1704,32 @@ def run(
     return 0
 
 
+def sync_checklist_from_env(cfg_path: Path) -> int:
+    """issues.edited 事件入口：只做清单全选联动，不跑更新。
+
+    勾选同步是排版糖：失败只打 warning、永远返回 0——运行时「总开关=全合并」
+    的语义仍在，不能让一次权限抖动把工作流标红。
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "issues":
+        return 0
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return 0
+    try:
+        with open(event_path, encoding="utf-8") as fh:
+            event = json.load(fh)
+        cfg: Config = load_config(
+            cfg_path, fallback_username=os.environ.get("GITHUB_REPOSITORY_OWNER")
+        )
+        # 清单读写沿用内置 GITHUB_TOKEN（IW27 权限分离：合并才用 PAT）
+        client = GitHubClient(os.environ.get(cfg.github.token_env) or None)
+        changed = sync_from_issue_event(event, client)
+        print("清单勾选已同步" if changed else "清单勾选无需调整")
+    except Exception as exc:  # noqa: BLE001 —— 排版同步失败绝不让工作流变红
+        print(f"::warning::清单勾选同步失败（不影响合并语义）：{exc}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1711,6 +1738,11 @@ def main(argv: list[str] | None = None) -> int:
         pass
     parser = argparse.ArgumentParser(description="自动维护 GitHub Profile README")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    parser.add_argument(
+        "--sync-checklist",
+        action="store_true",
+        help="只同步清单「全部合并」勾选（issues.edited 事件用），不跑更新",
+    )
     parser.add_argument("--dry-run", action="store_true", help="打印到 stdout，不写文件")
     parser.add_argument(
         "--force",
@@ -1735,6 +1767,8 @@ def main(argv: list[str] | None = None) -> int:
         help="等待合并窗口分钟数（0 = 不等待；给出时覆盖 --wait-for-merges 的默认 30）",
     )
     args = parser.parse_args(argv)
+    if args.sync_checklist:
+        return sync_checklist_from_env(Path(args.config))
     merge_wait = 30.0 if args.wait_for_merges else 0.0
     if args.merge_wait_minutes is not None:
         merge_wait = args.merge_wait_minutes

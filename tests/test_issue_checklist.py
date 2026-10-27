@@ -13,6 +13,8 @@ from profile_agent.checklist import (
     build_checklist_body,
     parse_checked_prs,
     parse_merge_targets,
+    sync_from_issue_event,
+    sync_merge_all,
     update_checklist,
 )
 from profile_agent.github_client import API, GitHubClient, GitHubError
@@ -387,3 +389,139 @@ def test_body_says_checkboxes_only_fill_missing_description_on_overview():
     assert "缺描述" in body and "随后吸收" in body
     assert "统计与其余内容不受影响" in body
     assert "主页本轮已经吸收" not in body
+
+
+# ---- 全选联动（2026-10-27）：勾总开关带动条目，勾条目回写总开关 ----
+
+
+def _sync_body(master: str, *ticks: str) -> str:
+    """构造最小清单 body：总开关 + N 个条目 + 尾部说明。"""
+    lines = [
+        "## 🔔 README 更新待合并清单",
+        f"- [{master}] 全部合并：说明<!-- merge-all -->",
+    ]
+    for i, tick in enumerate(ticks, 1):
+        lines.append(
+            f"- [{tick}] repo{i}：[PR](https://github.com/alice/repo{i}/pull/{i})"
+            f"（[新版 README 预览](https://github.com/alice/repo{i}/blob/b/README.md)）"
+        )
+        lines.append("  ↳ 2 个文件 · +1/-1 行")
+    lines += ["", "尾部说明"]
+    return "\n".join(lines) + "\n"
+
+
+def _states(body: str) -> tuple[str, list[str]]:
+    """解析 body → (总开关状态, 各条目状态列表)。"""
+    master = ""
+    items: list[str] = []
+    for line in body.splitlines():
+        if "<!-- merge-all -->" in line:
+            master = line[3]
+        elif line.startswith("- [") and "/pull/" in line:
+            items.append(line[3])
+    return master, items
+
+
+def test_sync_master_checked_ticks_every_entry():
+    out = sync_merge_all(_sync_body(" ", " ", " ", " "), _sync_body("x", " ", " ", " "))
+    assert _states(out) == ("x", ["x", "x", "x"])
+
+
+def test_sync_master_unchecked_clears_every_entry():
+    out = sync_merge_all(_sync_body("x", "x", "x", "x"), _sync_body(" ", "x", "x", "x"))
+    assert _states(out) == (" ", [" ", " ", " "])
+
+
+def test_sync_child_uncheck_clears_master_only():
+    """手动取消一条 → 总开关跟着取消；其余条目保持用户刚点的样子。"""
+    out = sync_merge_all(_sync_body("x", "x", "x", "x"), _sync_body("x", "x", " ", "x"))
+    assert _states(out) == (" ", ["x", " ", "x"])
+
+
+def test_sync_all_children_checked_checks_master():
+    out = sync_merge_all(_sync_body(" ", "x", "x", " "), _sync_body(" ", "x", "x", "x"))
+    assert _states(out) == ("x", ["x", "x", "x"])
+
+
+def test_sync_ignores_edits_not_touching_checkboxes():
+    """改说明文字不应产生任何改写（否则 bot 会无意义地回写、可能引发事件循环）。"""
+    old = _sync_body(" ", "x", " ", "x")
+    new = old.replace("尾部说明", "新的尾部说明")
+    assert sync_merge_all(old, new) == new
+
+
+def test_sync_is_idempotent():
+    body = sync_merge_all(_sync_body(" ", " ", " "), _sync_body("x", " ", " "))
+    assert sync_merge_all(body, body) == body
+
+
+def test_sync_preserves_detail_lines_and_tail():
+    out = sync_merge_all(_sync_body(" ", " ", " "), _sync_body("x", " ", " "))
+    assert out.count("  ↳ 2 个文件 · +1/-1 行") == 2
+    assert out.rstrip().endswith("尾部说明")
+    assert "/blob/b/README.md" in out
+
+
+def test_sync_without_master_or_entries_returns_unchanged():
+    no_master = "## 清单\n- [ ] a：[PR](https://github.com/a/b/pull/1)\n"
+    assert sync_merge_all(no_master, no_master) == no_master
+    no_entries = "## 清单\n- [ ] 全部合并<!-- merge-all -->\n"
+    assert sync_merge_all(no_entries, no_entries) == no_entries
+
+
+class _RecordingClient:
+    def __init__(self, fail: bool = False):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail = fail
+
+    def _patch(self, url, payload, **kwargs):
+        self.calls.append((url, payload))
+        if self.fail:
+            raise GitHubError("boom")
+        return {}, {}
+
+
+def _event(old: str, new: str, *, action: str = "edited") -> dict:
+    return {
+        "action": action,
+        "issue": {"number": 15, "body": new},
+        "changes": {"body": {"from": old}},
+        "repository": {"full_name": "alice/alice"},
+    }
+
+
+def test_sync_from_event_patches_when_master_toggled():
+    client = _RecordingClient()
+    assert sync_from_issue_event(
+        _event(_sync_body(" ", " "), _sync_body("x", " ")), client
+    ) is True
+    assert len(client.calls) == 1
+    url, payload = client.calls[0]
+    assert url == f"{API}/repos/alice/alice/issues/15"
+    assert _states(payload["body"]) == ("x", ["x"])
+
+
+def test_sync_from_event_noop_when_nothing_relevant_changed():
+    client = _RecordingClient()
+    old = _sync_body(" ", " ")
+    new = old + "\n补充一句\n"
+    assert sync_from_issue_event(_event(old, new), client) is False
+    assert client.calls == []
+
+
+def test_sync_from_event_ignores_non_edit_and_missing_old_body():
+    client = _RecordingClient()
+    assert sync_from_issue_event(
+        _event(_sync_body(" ", " "), _sync_body("x", " "), action="opened"), client
+    ) is False
+    event = _event(_sync_body(" ", " "), _sync_body("x", " "))
+    del event["changes"]
+    assert sync_from_issue_event(event, client) is False
+    assert client.calls == []
+
+
+def test_sync_from_event_propagates_patch_failure():
+    """HTTP 细节留给纯函数之外的入口；失败由 cli 层降级为 warning。"""
+    client = _RecordingClient(fail=True)
+    with pytest.raises(GitHubError):
+        sync_from_issue_event(_event(_sync_body(" ", " "), _sync_body("x", " ")), client)
