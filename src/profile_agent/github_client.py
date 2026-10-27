@@ -59,7 +59,7 @@ class GitHubClient:
             if resp.status_code == 404:
                 if allow_404:
                     return None, resp.headers
-                raise GitHubError("GitHub API 返回 404：用户不存在或仓库不可见")
+                raise GitHubError(f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）")
             if resp.status_code >= 500 and attempt < self._max_retries:
                 self._sleep(0.5 * (attempt + 1))
                 continue
@@ -79,7 +79,7 @@ class GitHubClient:
             if resp.status_code == 404:
                 if allow_404:
                     return None, resp.headers
-                raise GitHubError("GitHub API 返回 404：用户不存在或仓库不可见")
+                raise GitHubError(f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）")
             if resp.status_code >= 500 and attempt < self._max_retries:
                 self._sleep(0.5 * (attempt + 1))
                 continue
@@ -117,11 +117,21 @@ class GitHubClient:
         用途只有诊断：令牌类型看前缀、账号看这里——「明明配了令牌却全 404」
         时，两样加起来才能判断是不是拿错了令牌（别人账号 / App 安装令牌）。
         """
+        return self.token_info()["login"]
+
+    def token_info(self) -> dict:
+        """诊断用：令牌所属账号 + classic 令牌的 OAuth scopes（fine-grained 不返回）。"""
         try:
-            data, _ = self._get(f"{API}/user")
-        except GitHubError:
-            return ""
-        return str(data.get("login") or "") if isinstance(data, dict) else ""
+            data, headers = self._get(f"{API}/user")
+        except GitHubError as exc:
+            return {"login": "", "scopes": "", "error": str(exc)[:120]}
+        login = str(data.get("login") or "") if isinstance(data, dict) else ""
+        scopes = ""
+        for key, value in (headers or {}).items():
+            if str(key).lower() == "x-oauth-scopes":
+                scopes = str(value)
+                break
+        return {"login": login, "scopes": scopes}
 
     def list_repos(self, username: str) -> list[dict]:
         """列出用户全部公开仓库（owner 归属，按更新时间倒序，自动翻页）。"""

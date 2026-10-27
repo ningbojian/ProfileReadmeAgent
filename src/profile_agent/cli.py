@@ -264,16 +264,19 @@ def _token_kind(token: str) -> str:
 
 
 def _token_desc(token: str | None, client=None) -> str:
-    """「类型 · 账号」一句话——404 时唯一能自证是不是拿错了令牌的信息。"""
+    """「类型 · 账号 · scopes」一句话——404 时唯一能自证是不是拿错了令牌的信息。"""
     if not token:
         return "匿名（未配置令牌）"
-    login = ""
+    info: dict = {}
     if client is not None:
         try:
-            login = client.whoami()
+            info = client.token_info()
         except Exception:  # noqa: BLE001 —— 诊断信息，取不到就算了
-            login = ""
-    return f"{_token_kind(token)} · 账号 {login or '未知'}"
+            info = {}
+    login = info.get("login") or "未知"
+    scopes = info.get("scopes") or ""
+    tail = f" · scopes: {scopes}" if scopes else " · scopes: 未返回（fine-grained / App 安装令牌）"
+    return f"{_token_kind(token)} · 账号 {login}{tail}"
 
 
 def _pat_404_hint(stats: dict, token_desc: str = "") -> str:

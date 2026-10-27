@@ -200,3 +200,23 @@ def test_whoami_returns_empty_on_auth_failure():
     session = FakeSession([FakeResponse(status=401, json_data={}, text="Bad credentials")])
     client = GitHubClient(token="tok", session=session)
     assert client.whoami() == ""
+
+
+def test_token_info_reports_login_and_scopes():
+    """token_info：账号 + classic 令牌的 OAuth scopes，是 404 自诊断的最后一块拼图。"""
+    session = FakeSession(
+        [FakeResponse(json_data={"login": "ningbojian"}, headers={"x-oauth-scopes": "repo, workflow"})]
+    )
+    client = GitHubClient(token="ghp_x", session=session)
+    info = client.token_info()
+    assert info["login"] == "ningbojian"
+    assert info["scopes"] == "repo, workflow"
+
+
+def test_404_message_includes_requested_path():
+    """404 要带上请求路径：同一个「用户不存在或仓库不可见」可能来自完全不同的端点。"""
+    session = FakeSession([FakeResponse(status=404, json_data={}, text="Not Found")])
+    client = GitHubClient(token="tok", session=session)
+    with pytest.raises(GitHubError) as err:
+        client._get("https://api.github.com/repos/a/b/commits/HEAD")
+    assert "/repos/a/b/commits/HEAD" in str(err.value)
