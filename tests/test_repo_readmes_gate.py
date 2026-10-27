@@ -524,7 +524,8 @@ def test_many_404s_hint_classic_token(tmp_path, capsys):
     assert _run(cfg, Many404Fetchers(heads=_heads_all())) == 0
     out = capsys.readouterr().out
     assert "模式 B 状态" in out
-    assert "classic" in out and "WORKFLOW_PAT" in out
+    # 第一大原因是拿内置 token 去读别的仓库（一律 404），不是令牌类型
+    assert "GITHUB_TOKEN" in out and "WORKFLOW_PAT" in out
 
 
 def test_whole_b_crash_shows_failure_not_noop(tmp_path, monkeypatch, capsys):

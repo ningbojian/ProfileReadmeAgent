@@ -234,18 +234,33 @@ def _b_status_line(stats: dict, reason: str = "") -> str:
     return "模式 B 状态：" + body
 
 
-def _pat_404_hint(stats: dict) -> str:
-    """404 占多数时的令牌提示：fine-grained 令牌对未勾选仓库一律返回 404。
+def _resolve_github_token(cfg) -> str | None:
+    """读仓库用的 token。
 
-    真实原因常常是令牌类型不对，而不是仓库不存在——不提示就会被当成工具故障。
+    Actions 内置的 GITHUB_TOKEN 只对**当前仓库**有效：拿它去读账号下的其他仓库
+    （哪怕是公开仓库），GitHub 一律返回 404 而不是 403，用户只会看到「全部仓库
+    读取失败」。workflow 已经把 WORKFLOW_PAT 注入环境，配了就用它——用户配这把
+    令牌本来就是为了读别的仓库。显式把 github.token_env 写成别的名字时照常尊重。
+    """
+    token = os.environ.get(cfg.github.token_env) or ""
+    if cfg.github.token_env in ("", "GITHUB_TOKEN"):
+        token = os.environ.get("WORKFLOW_PAT") or token
+    return token or None
+
+
+def _pat_404_hint(stats: dict) -> str:
+    """404 占多数时的令牌提示：先说最常见的内置 token 限制，再说令牌类型。
+
+    真实原因常常是「用错了 token」或「令牌类型不对」，而不是仓库不存在——
+    不提示就会被当成工具故障。
     """
     not_found = int(stats.get("not_found") or 0)
     errors = int(stats.get("error") or 0)
     if not_found < 2 or not_found * 2 < errors:
         return ""
     return (
-        "⚠️ 读取失败多为 404：fine-grained 令牌对未勾选仓库一律返回 404；"
-        "WORKFLOW_PAT 请用 classic 令牌并勾选 repo + workflow"
+        "⚠️ 读取失败多为 404：内置 GITHUB_TOKEN 只对当前仓库有效，用它读其他仓库一律 404；"
+        "请确认 github.token_env 指向 WORKFLOW_PAT，且该 secret 里是 classic 令牌的最新值"
     )
 
 
@@ -348,7 +363,7 @@ def run(
             if pinned_file.exists():
                 native_pins = json.loads(pinned_file.read_text(encoding="utf-8"))
         else:
-            token = os.environ.get(cfg.github.token_env) or None
+            token = _resolve_github_token(cfg)
             gh_client = GitHubClient(token)
             user = gh_client.get_user(cfg.github.username)
             raw_repos = gh_client.list_repos(cfg.github.username)

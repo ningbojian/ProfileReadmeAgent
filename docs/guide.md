@@ -91,7 +91,7 @@ profile-agent --fixture /path/to/ProfileReadmeAgent/tests/fixtures --no-ai --dry
 
 > 本地运行前，先把 `config.yaml` 的 `github.username` 填成你的用户名（Actions 里留空即可，会自动取仓库所有者）。
 
-环境变量：`GITHUB_TOKEN`（可选，不填走匿名配额 60 次/小时；建议去 GitHub → Settings → Developer settings 生成一个 classic PAT）、AI key（见下一节，名字由 `ai.key_env` 决定，默认 `ANTHROPIC_API_KEY`）。
+环境变量：`GITHUB_TOKEN`（可选，不填走匿名配额 60 次/小时；Actions 内置的只够读当前仓库，要读账号下其他仓库请配 `WORKFLOW_PAT` secret——配了工具会自动优先用它）、AI key（见下一节，名字由 `ai.key_env` 决定，默认 `ANTHROPIC_API_KEY`）。
 
 ## 换用其他模型（DeepSeek / 千问 / Kimi / MiMo / OpenCode Go / Ollama）
 
@@ -406,7 +406,7 @@ schedule:
   enabled: true            # false = 关掉定时更新（手动仍可触发）
 github:
   username: ""             # 留空 = 自动用仓库所有者（fork 即用）
-  token_env: "GITHUB_TOKEN"  # token 读哪个环境变量
+  token_env: "GITHUB_TOKEN"  # token 读哪个环境变量；配了 WORKFLOW_PAT secret 时自动优先用它（内置 token 读不了别的仓库）
 repos:
   exclude_forks: true      # 不展示 fork 的仓库
   exclude_archived: false  # 是否排除已归档仓库
@@ -463,7 +463,7 @@ repo_descriptions:
 
 - **想关掉自动更新**：`config.yaml` 里 `schedule.enabled: false` 提交即可；或在 Actions 页面 Disable workflow。
 - **想让所有仓库立刻出/更新 README PR**：Run workflow 的「本次强制重跑」选 **两者都强制**（主页 + 仓库 README 全量）或 **强制重跑各仓库 README**（只全量重跑仓库 README，主页仍按变化更新）——全部公开仓库（profile 自身除外）都会重新生成并开 PR，不选则只处理有新代码提交的仓库。
-- **某仓「读取失败 404」但它明明是公开仓库**：几乎都是 `WORKFLOW_PAT` 的问题。按顺序查：① secret 里的值是不是 **classic PAT**（`ghp_` 开头）——fine-grained PAT 若选了 "Only select repositories"，对未勾选的公开仓一律 404；② 换了新令牌后**有没有把新值重新粘进 secret**（在 PAT 页面重建/续期不会自动同步到 secret，这是最常见的坑）；③ 令牌是否已过期。一个仓读取失败只跳过它自己，不影响其他仓库。
+- **某仓「读取失败 404」但它明明是公开仓库**：按顺序查：① **是不是在拿内置 `GITHUB_TOKEN` 读别的仓库**——它只对当前仓库有效，读其他仓库（哪怕公开）GitHub 一律 404；配了 `WORKFLOW_PAT` secret 时工具会自动改用它，所以先确认 secret 确实存在且非空；② secret 里的值是不是 **classic PAT**（`ghp_` 开头）——fine-grained PAT 若选了 "Only select repositories"，对未勾选的公开仓同样 404；③ 换了新令牌后**有没有把新值重新粘进 secret**（在 PAT 页面重建/续期不会自动同步到 secret，这是经典坑）；④ 令牌是否已过期。一个仓读取失败只跳过它自己，不影响其他仓库。
 - **AI 简介没生成**：检查 secret 名称是否为 `ANTHROPIC_API_KEY`；工具在 AI 失败时会保留旧简介，不会让任务失败。
 - **英文版里仓库描述还是中文**：三种情况——① 描述本身不含中文（纯英文等非中文描述直接照搬、不翻译）；② AI 翻译失败或超时（本轮沿用原文，下轮自动重试）；③ secret 里没配 `ANTHROPIC_API_KEY`（AI 能力整体降级）。
 - **手改 README 会被覆盖吗**：不会整篇覆盖。手写页默认 `auto`：工具只在第一个标题后插/更新一个 AI 简介块，其余内容逐字节不动；块被删了会补回，块内文字是托管区。整页生成的文件（模板页 / `mode: full`）里，生成区随数据更新、手工微调保留（与数据冲突处以数据为准；删除生成区内容会在下次恢复，想隐藏请改 config），custom 标记之间的内容永远保留。

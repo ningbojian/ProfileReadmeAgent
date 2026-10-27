@@ -1878,3 +1878,49 @@ def test_report_ai_failures_silent_when_clean(tmp_path, monkeypatch, capsys):
 
     assert not summary.exists() or summary.read_text(encoding="utf-8") == ""
     assert "::warning::" not in capsys.readouterr().out
+
+
+# ---- GitHub 令牌解析（2026-10-27）：内置 GITHUB_TOKEN 只对本仓库有效 ----
+
+
+def _cfg_with_token_env(name: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(github=SimpleNamespace(token_env=name))
+
+
+def test_token_defaults_to_workflow_pat_when_present(monkeypatch):
+    """配置写的是默认 GITHUB_TOKEN，但 workflow 注入了 WORKFLOW_PAT → 用 PAT。
+
+    内置 token 只对本仓库有效：拿它读账号下其他仓库（哪怕公开）GitHub 一律
+    返回 404，用户会看到「7 个仓库全部读取失败」却找不到原因。
+    """
+    from profile_agent.cli import _resolve_github_token
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_builtin")
+    monkeypatch.setenv("WORKFLOW_PAT", "ghp_classic")
+    assert _resolve_github_token(_cfg_with_token_env("GITHUB_TOKEN")) == "ghp_classic"
+
+
+def test_token_explicit_env_wins_over_workflow_pat(monkeypatch):
+    from profile_agent.cli import _resolve_github_token
+
+    monkeypatch.setenv("MY_PAT", "ghp_mine")
+    monkeypatch.setenv("WORKFLOW_PAT", "ghp_other")
+    assert _resolve_github_token(_cfg_with_token_env("MY_PAT")) == "ghp_mine"
+
+
+def test_token_falls_back_to_builtin_when_no_pat(monkeypatch):
+    from profile_agent.cli import _resolve_github_token
+
+    monkeypatch.delenv("WORKFLOW_PAT", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_builtin")
+    assert _resolve_github_token(_cfg_with_token_env("GITHUB_TOKEN")) == "ghs_builtin"
+
+
+def test_token_anonymous_when_nothing_set(monkeypatch):
+    from profile_agent.cli import _resolve_github_token
+
+    for name in ("GITHUB_TOKEN", "WORKFLOW_PAT"):
+        monkeypatch.delenv(name, raising=False)
+    assert _resolve_github_token(_cfg_with_token_env("GITHUB_TOKEN")) is None

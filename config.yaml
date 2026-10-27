@@ -7,7 +7,7 @@ schedule:
 
 github:
   username: "" # 留空 = 自动使用仓库所有者（Use this template 拿到后无需改；本地运行请填用户名）
-  token_env: "GITHUB_TOKEN" # token 所在环境变量名（Actions 内置 GITHUB_TOKEN 即可）
+  token_env: "GITHUB_TOKEN" # token 所在环境变量名。内置 GITHUB_TOKEN 只够读本仓库；配了 WORKFLOW_PAT secret 时工具会优先用它（读其他仓库必需）
 
 repos:
   exclude_forks: true
