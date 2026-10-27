@@ -325,7 +325,10 @@ def test_body_merge_all_master_line_above_entries():
     first_entry = next(i for i, ln in enumerate(lines) if ln.startswith("- [ ] shiyuan："))
     assert lines.index(master[0]) < first_entry  # ④ 总开关在条目之前（一眼可见）
     # 无条目（全部结清的关闭体）不渲染总开关——死控件只会误导
-    assert "全部合并" not in build_checklist_body([], username="alice", updated_at="t")
+    # （只断言控件本身：正文其余说明里可以提到「全部合并」这个词）
+    closed = build_checklist_body([], username="alice", updated_at="t")
+    assert "merge-all" not in closed
+    assert "- [ ] 全部合并" not in closed
 
 
 def test_body_copy_says_manual_close_cancels_auth():
@@ -470,9 +473,17 @@ def test_sync_without_master_or_entries_returns_unchanged():
 
 
 class _RecordingClient:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, fresh_body: str | None = None):
         self.calls: list[tuple[str, dict]] = []
+        self.gets: list[str] = []
         self.fail = fail
+        self.fresh_body = fresh_body  # None = GET 失败（读不到最新正文）
+
+    def _get(self, url, **kwargs):
+        self.gets.append(url)
+        if self.fresh_body is None:
+            return None, 404
+        return {"number": 15, "body": self.fresh_body}, 200
 
     def _patch(self, url, payload, **kwargs):
         self.calls.append((url, payload))
@@ -491,21 +502,49 @@ def _event(old: str, new: str, *, action: str = "edited") -> dict:
 
 
 def test_sync_from_event_patches_when_master_toggled():
-    client = _RecordingClient()
+    new = _sync_body("x", " ")
+    client = _RecordingClient(fresh_body=new)
     assert sync_from_issue_event(
-        _event(_sync_body(" ", " "), _sync_body("x", " ")), client
+        _event(_sync_body(" ", " "), new), client
     ) is True
     assert len(client.calls) == 1
     url, payload = client.calls[0]
     assert url == f"{API}/repos/alice/alice/issues/15"
     assert _states(payload["body"]) == ("x", ["x"])
+    # 回写前先读服务端最新正文（防覆盖用户在排队期间的新编辑）
+    assert client.gets == [f"{API}/repos/alice/alice/issues/15"]
 
 
 def test_sync_from_event_noop_when_nothing_relevant_changed():
-    client = _RecordingClient()
     old = _sync_body(" ", " ")
     new = old + "\n补充一句\n"
+    client = _RecordingClient(fresh_body=new)
     assert sync_from_issue_event(_event(old, new), client) is False
+    assert client.calls == []
+
+
+def test_sync_from_event_skips_when_user_edited_again():
+    """事件排队期间用户又点了一次：按旧正文回写会把新编辑覆盖掉。
+
+    （用户侧的可见症状是随后再点一下弹「Could not update issue comment」。）
+    以服务端最新正文为准：不一致就不写，交给排在后面的那一轮——它拿到的
+    正是最新 body。
+    """
+    stale_new = _sync_body("x", " ", " ")  # 本次事件：刚勾上总开关
+    newer = _sync_body("x", "x", " ")  # 紧接着用户又取消了一个条目
+    client = _RecordingClient(fresh_body=newer)
+    assert sync_from_issue_event(
+        _event(_sync_body(" ", " ", " "), stale_new), client
+    ) is False
+    assert client.calls == []
+
+
+def test_sync_from_event_skips_when_current_body_unreadable():
+    """读不到最新正文时不猜着写：下一轮（下一次编辑触发）再同步。"""
+    client = _RecordingClient(fresh_body=None)
+    assert sync_from_issue_event(
+        _event(_sync_body(" ", " "), _sync_body("x", " ")), client
+    ) is False
     assert client.calls == []
 
 
@@ -518,10 +557,12 @@ def test_sync_from_event_ignores_non_edit_and_missing_old_body():
     del event["changes"]
     assert sync_from_issue_event(event, client) is False
     assert client.calls == []
+    assert client.gets == []  # 不是编辑事件就不该发任何请求
 
 
 def test_sync_from_event_propagates_patch_failure():
     """HTTP 细节留给纯函数之外的入口；失败由 cli 层降级为 warning。"""
-    client = _RecordingClient(fail=True)
+    new = _sync_body("x", " ")
+    client = _RecordingClient(fail=True, fresh_body=new)
     with pytest.raises(GitHubError):
-        sync_from_issue_event(_event(_sync_body(" ", " "), _sync_body("x", " ")), client)
+        sync_from_issue_event(_event(_sync_body(" ", " "), new), client)

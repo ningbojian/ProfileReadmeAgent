@@ -117,11 +117,21 @@ def sync_merge_all(old_body: str, new_body: str) -> str:
     return "".join(out)
 
 
+def _same_body(a: str, b: str) -> bool:
+    """逐字节比较正文（只抹平换行符差异与末尾空白，GitHub 可能归一化）。"""
+    return a.replace("\r\n", "\n").rstrip() == b.replace("\r\n", "\n").rstrip()
+
+
 def sync_from_issue_event(event: dict, client: GitHubClient) -> bool:
     """处理 issues.edited 事件：把清单勾选同步回 GitHub；返回是否真的改写了。
 
     只做排版联动，不合并、不读快照。异常向上抛，由 cli 降级成 warning
     （同步失败不能让工作流变红）。
+
+    回写前先读服务端最新正文（2026-10-27 防抢写）：一次点击到本 job 跑完有
+    十几秒，期间用户完全可能又点了一次——此时按旧正文回写会覆盖那次新编辑，
+    用户侧还会看到 GitHub 的「Could not update issue comment」。不一致就
+    不写，交给排在后面、拿着最新 body 的那一轮。
     """
     if not isinstance(event, dict) or event.get("action") != "edited":
         return False
@@ -134,6 +144,11 @@ def sync_from_issue_event(event: dict, client: GitHubClient) -> bool:
         return False
     updated = sync_merge_all(str(old_body), str(new_body))
     if updated == new_body:
+        return False
+    fresh = get_issue(client, str(repo), int(number))
+    current = str((fresh or {}).get("body") or "")
+    if fresh is None or not _same_body(current, str(new_body)):
+        print("清单勾选：检测到更新的一次编辑（或读不到最新正文），本次不写，交给最新一轮")
         return False
     client._patch(f"{API}/repos/{repo}/issues/{number}", {"body": updated})
     return True
@@ -254,6 +269,8 @@ def build_checklist_body(
         "- 手动点 Merge = 立即生效，工具不会为同内容重开 PR；",
         "- 放着不动 = 完全没问题：PR 留着以后合，主页照样是新鲜的；",
         "- 勾选后无需手动关本清单——全部处理完会自动关闭，提前手动关会让勾选失效；",
+        "- 勾「全部合并」后清单约半分钟自动刷新；若 GitHub 提示 Could not update issue comment，"
+        "刷新本页重新点一次即可（同步任务正在改写正文）；",
         "- 合并失败（如冲突）的勾选会在清单刷新时清除，修复后需重新勾选。",
         "",
         "三种处理方式的效果：",

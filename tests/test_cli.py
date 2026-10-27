@@ -2036,6 +2036,10 @@ def test_sync_checklist_from_env_patches_on_master_toggle(tmp_path, monkeypatch)
         def __init__(self, token=None, **kw):
             self.token = token
 
+        def _get(self, url, **kw):
+            # 服务端正文 = 本次编辑后的正文（没有更新的编辑）
+            return {"number": 15, "body": new}, 200
+
         def _patch(self, url, payload, **kw):
             calls.append((url, payload))
             return {}, {}
@@ -2077,6 +2081,9 @@ def test_sync_checklist_from_env_degrades_to_warning(tmp_path, monkeypatch, caps
     class FakeClient:
         def __init__(self, token=None, **kw):
             pass
+
+        def _get(self, url, **kw):
+            return {"number": 15, "body": new}, 200
 
         def _patch(self, url, payload, **kw):
             raise GitHubError("boom")
