@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from . import ai_failures
+from . import ai_failures, usage
 from .config import AIConfig
 from .text_lang import language_mismatch
 
@@ -62,8 +62,10 @@ def chat_text(
                 raise err
             resp.raise_for_status()
         except Exception as exc:  # 记录后原样抛出：上层继续沿用缓存
+            usage.note_ai_call(ok=False)
             ai_failures.record(exc, cfg.provider, cfg.model)
             raise
+        usage.note_ai_call()
         return str(resp.json()["choices"][0]["message"]["content"] or "")
 
     if client is None:
@@ -90,8 +92,10 @@ def chat_text(
             messages=[{"role": "user", "content": user_content}],
         )
     except Exception as exc:  # 记录后原样抛出：上层继续沿用缓存
+        usage.note_ai_call(ok=False)
         ai_failures.record(exc, cfg.provider, cfg.model)
         raise
+    usage.note_ai_call()
     return extract_text(message.content)
 
 

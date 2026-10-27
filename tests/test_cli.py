@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from profile_agent.cli import run
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -60,6 +62,26 @@ def test_full_run_never_creates_docs_projects(tmp_path):
     cfg = _write_config(tmp_path)
     assert _run(cfg) == 0
     assert not (tmp_path / "docs" / "projects").exists()
+
+
+def test_run_prints_usage_numbers(tmp_path, capsys):
+    """每轮都要给出可核对数字：AI 请求次数、缓存复用、耗时（简历/成本分析的证据）。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    out = capsys.readouterr().out
+    assert "本轮 AI 用量：请求 0 次（失败 0）" in out  # no_ai → 0 次
+    assert "耗时：" in out
+
+
+def test_no_change_run_still_reports_usage(tmp_path, capsys):
+    """「无变化，跳过更新」这条路也要有数字，否则省下的调用无法量化。"""
+    cfg = _write_config(tmp_path)
+    assert _run(cfg) == 0
+    capsys.readouterr()
+    assert _run(cfg) == 0
+    out = capsys.readouterr().out
+    assert "无变化，跳过更新" in out
+    assert "本轮 AI 用量：" in out and "耗时：" in out
 
 
 def test_full_run_writes_readme_and_snapshot(tmp_path):
@@ -1944,3 +1966,35 @@ def test_pat_404_hint_includes_actual_token_identity():
         {"error": 2, "not_found": 2}, token_desc="fine-grained（github_pat_）· 账号 ningbojian"
     )
     assert "fine-grained" in hint and "ningbojian" in hint
+
+
+def test_fetch_compare_uses_three_dot_range():
+    """GitHub REST compare 只认 base...head（三个点）：两个点一律 404。
+
+    两个点让每个有基线的仓库都「用户不存在或仓库不可见」，且与令牌无关。
+    """
+    from profile_agent.cli import _fetchers_from_client
+
+    calls = []
+
+    class FakeClient:
+        def _get(self, url):
+            calls.append(url)
+            return {"commits": [], "files": []}, {}
+
+    _fetchers_from_client(FakeClient()).fetch_compare("alice/x", "aaa", "bbb")
+    assert calls == ["https://api.github.com/repos/alice/x/compare/aaa...bbb"]
+
+
+def test_fetch_compare_404_becomes_compare_gone():
+    """compare 404 → CompareGone（重置基线），不能被当成普通错误跳过整仓。"""
+    from profile_agent.cli import _fetchers_from_client
+    from profile_agent.github_client import GitHubError
+    from profile_agent.repo_readmes import CompareGone
+
+    class FakeClient:
+        def _get(self, url):
+            raise GitHubError("GitHub API 返回 404：用户不存在或仓库不可见", 404)
+
+    with pytest.raises(CompareGone):
+        _fetchers_from_client(FakeClient()).fetch_compare("alice/x", "aaa", "bbb")

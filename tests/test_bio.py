@@ -223,6 +223,54 @@ def test_openai_provider_reuses_fresh_bio_without_http(monkeypatch):
     assert text == "旧简介" and generated is False and called == []
 
 
+def test_chat_text_counts_usage_on_success(monkeypatch):
+    """所有 AI 调用都走 chat_text：成功一次就计一次请求（摘要里的数字来源）。"""
+    from profile_agent import usage
+    from profile_agent.bio import chat_text
+
+    usage.reset()
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "好"}}]}
+
+    monkeypatch.setenv("K", "sk-test")
+    cfg = AIConfig(provider="openai", base_url="http://x", key_env="K", model="m")
+    chat_text(cfg, "s", "u", http_post=lambda *a, **k: FakeResp())
+
+    data = usage.counters()
+    assert data["ai_calls"] == 1
+    assert data["ai_failures"] == 0
+    usage.reset()
+
+
+def test_chat_text_counts_usage_on_failure(monkeypatch):
+    """失败也计一次请求 + 一次失败，摘要里「请求 N 次（失败 K）」才对得上。"""
+    from profile_agent import ai_failures, usage
+    from profile_agent.bio import chat_text
+
+    usage.reset()
+    ai_failures.reset()
+
+    class FakeResp:
+        status_code = 401
+        text = "bad key"
+
+    monkeypatch.setenv("K", "sk-test")
+    cfg = AIConfig(provider="openai", base_url="http://x", key_env="K", model="m")
+    with pytest.raises(Exception, match="HTTP 401"):
+        chat_text(cfg, "s", "u", http_post=lambda *a, **k: FakeResp())
+
+    data = usage.counters()
+    assert data["ai_calls"] == 1
+    assert data["ai_failures"] == 1
+    usage.reset()
+    ai_failures.reset()
+
+
 def test_anthropic_custom_base_url_and_key_env(monkeypatch):
     """provider=anthropic 且填了 base_url（如 MiMo 的 Anthropic 兼容端点）时，创建默认 client 要带上。"""
     import sys

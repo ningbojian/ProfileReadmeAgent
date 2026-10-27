@@ -216,7 +216,7 @@ def _add_head(http, fn, head=HEAD):
 def _add_compare(http, fn, base=BASE, head=HEAD, *, commits=None, files=None):
     http.add(
         "GET",
-        f"{B}/repos/{fn}/compare/{base}..{head}",
+        f"{B}/repos/{fn}/compare/{base}...{head}",
         FakeResponse(json_data={"commits": commits or COMMITS, "files": files or FILES}),
     )
 

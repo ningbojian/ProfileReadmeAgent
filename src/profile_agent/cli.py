@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import ai_failures
+from . import ai_failures, usage
 from .aggregate import (
     bio_input_hash,
     build_bio_payload,
@@ -115,8 +115,10 @@ def _fetchers_from_client(client: GitHubClient):
             return str(data.get("sha") or "")
 
         def fetch_compare(self, full_name: str, base: str, head: str):
+            # REST compare 只认 base...head（三个点）：两个点一律 404（实测 7 仓全中），
+            # 且与令牌、历史重写无关——别改回两个点。
             try:
-                data, _ = client._get(f"{API}/repos/{full_name}/compare/{base}..{head}")
+                data, _ = client._get(f"{API}/repos/{full_name}/compare/{base}...{head}")
             except GitHubError as exc:
                 if getattr(exc, "status", None) in (404, 409):
                     raise CompareGone(str(exc)) from exc
@@ -212,6 +214,16 @@ def _append_summary(markdown: str) -> None:
             fh.write(markdown + "\n")
     except OSError:
         pass
+
+
+def _emit_usage(started_at: float, b_stats: dict | None = None) -> None:
+    """运行末尾的数字：AI 请求 / 缓存复用 / 仓库无需重跑率 / 耗时。
+
+    这些是「增量更新省了多少调用」的唯一证据，日志与摘要都写一份。
+    """
+    for line in usage.summary_lines(time.monotonic() - started_at, b_stats):
+        print(line)
+        _append_summary(f"- {line}")
 
 
 _B_STAT_LABELS = (
@@ -365,6 +377,8 @@ def run(
     sleep_fn=None,
 ) -> int:
     ai_failures.reset()  # 每轮开始清空：进程内可能跑多轮（测试/连续本地运行）
+    usage.reset()  # 用量统计同理：摘要里的「AI 请求 / 缓存复用」必须只算本轮
+    started_at = time.monotonic()
     token_desc = ""  # 「令牌类型 · 账号」诊断信息，读到仓库后填（404 提示会带上）
     fallback = os.environ.get("GITHUB_REPOSITORY_OWNER")
     try:
@@ -757,6 +771,8 @@ def run(
         and not embed_pending  # 手写页待插/待更新简介块（首插、删块、手改块）
         and not broken_pending  # marker 损坏：每轮开门提示修复，直到用户处理
     ):
+        usage.note_cache("short_intro", len(short_targets))
+        _emit_usage(started_at)
         print("无变化，跳过更新")
         return 0
 
@@ -977,6 +993,12 @@ def run(
         b_reason = MISSING_KEY_REASON
     elif any(r.status == "suppressed" for r in b_results):
         b_reason = "本批输入与上次失败相同已跳过（不会自动重试；新提交或 --force 才重试）"
+    if b_stats:
+        # 没进队列的仓库就是「没发生 AI 调用」的仓库：首见只记基线、无变化、仅 README 变动
+        usage.note_cache(
+            "repo_readme",
+            sum(int(b_stats.get(k) or 0) for k in ("no_change", "readme_only", "first_seen")),
+        )
     status_line = _b_status_line(b_stats, b_reason)
     print(status_line)
     _append_summary(f"- {status_line}")
@@ -1241,6 +1263,7 @@ def run(
             ):
                 short_intros[r.full_name] = st["short_intro"]
                 short_intros_en[r.full_name] = st.get("short_intro_en") or ""
+                usage.note_cache("short_intro")
                 continue
             try:
                 text, text_en = generate_short_intro(
@@ -1281,12 +1304,14 @@ def run(
                 if cfg.readme.bilingual:
                     if st.get("desc_en") and st.get("desc_en_src") == r.description:
                         descs_en[r.full_name] = st["desc_en"]  # 缓存新鲜：直接用
+                        usage.note_cache("desc")
                     else:
                         stale_en.append(r)
             else:
                 # en 侧原本就是非中文；zh 侧需要中译（中英混排之外的假名等也按中译处理）
                 if st.get("desc_zh") and st.get("desc_zh_src") == r.description:
                     descs_zh[r.full_name] = st["desc_zh"]  # 缓存新鲜：直接用
+                    usage.note_cache("desc")
                 else:
                     stale_zh.append(r)
         if stale_en:
@@ -1332,6 +1357,11 @@ def run(
             )
         except BioError as exc:
             print(f"简介生成失败，沿用旧简介：{exc}", file=sys.stderr)
+
+    if bio_text and not bio_generated:
+        usage.note_cache("bio")
+    # 用量行放在最后一个 AI 阶段（简介）之后、渲染之前：此时本轮所有调用都已发生
+    _emit_usage(started_at, b_stats)
 
     now_bj = datetime.now(_BEIJING)
     changed = False

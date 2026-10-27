@@ -220,3 +220,12 @@ def test_404_message_includes_requested_path():
     with pytest.raises(GitHubError) as err:
         client._get("https://api.github.com/repos/a/b/commits/HEAD")
     assert "/repos/a/b/commits/HEAD" in str(err.value)
+
+
+def test_error_carries_http_status():
+    """错误要带状态码：调用方（compare → CompareGone）靠它区分 404 与网络失败。"""
+    session = FakeSession([FakeResponse(status=404, json_data={}, text="Not Found")])
+    client = GitHubClient(token="tok", session=session)
+    with pytest.raises(GitHubError) as err:
+        client._get("https://api.github.com/repos/a/b")
+    assert err.value.status == 404

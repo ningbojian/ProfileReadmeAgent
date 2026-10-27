@@ -16,7 +16,15 @@ _NEXT_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
 class GitHubError(Exception):
-    """GitHub API 错误（消息为中文）。"""
+    """GitHub API 错误（消息为中文）。
+
+    status 为触发错误的 HTTP 状态码（无响应/重试耗尽时 None）——调用方据此区分
+    「404 基线失效」和「网络/限流」等不同恢复策略。
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class GitHubClient:
@@ -54,16 +62,23 @@ class GitHubClient:
             if resp.status_code in (403, 429) and resp.headers.get("X-RateLimit-Remaining") == "0":
                 reset = resp.headers.get("X-RateLimit-Reset", "未知")
                 raise GitHubError(
-                    f"GitHub API 限流（速率已达上限），重置时间戳：{reset}，请稍后再试"
+                    f"GitHub API 限流（速率已达上限），重置时间戳：{reset}，请稍后再试",
+                    resp.status_code,
                 )
             if resp.status_code == 404:
                 if allow_404:
                     return None, resp.headers
-                raise GitHubError(f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）")
+                raise GitHubError(
+                    f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）",
+                    resp.status_code,
+                )
             if resp.status_code >= 500 and attempt < self._max_retries:
                 self._sleep(0.5 * (attempt + 1))
                 continue
-            raise GitHubError(f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}")
+            raise GitHubError(
+                f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}",
+                resp.status_code,
+            )
         raise GitHubError("GitHub API 请求失败：重试次数已用尽")
 
     def _get(self, url: str, *, allow_404: bool = False) -> tuple[dict | list | None, dict]:
@@ -74,16 +89,23 @@ class GitHubClient:
             if resp.status_code in (403, 429) and resp.headers.get("X-RateLimit-Remaining") == "0":
                 reset = resp.headers.get("X-RateLimit-Reset", "未知")
                 raise GitHubError(
-                    f"GitHub API 限流（速率已达上限），重置时间戳：{reset}，请稍后再试"
+                    f"GitHub API 限流（速率已达上限），重置时间戳：{reset}，请稍后再试",
+                    resp.status_code,
                 )
             if resp.status_code == 404:
                 if allow_404:
                     return None, resp.headers
-                raise GitHubError(f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）")
+                raise GitHubError(
+                    f"GitHub API 返回 404：用户不存在或仓库不可见（{url.replace(API, '')}）",
+                    resp.status_code,
+                )
             if resp.status_code >= 500 and attempt < self._max_retries:
                 self._sleep(0.5 * (attempt + 1))
                 continue
-            raise GitHubError(f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}")
+            raise GitHubError(
+                f"GitHub API 请求失败：HTTP {resp.status_code} {resp.text[:200]}",
+                resp.status_code,
+            )
         raise GitHubError("GitHub API 请求失败：重试次数已用尽")
 
     def _post(
