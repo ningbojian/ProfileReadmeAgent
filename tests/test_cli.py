@@ -1924,3 +1924,23 @@ def test_token_anonymous_when_nothing_set(monkeypatch):
     for name in ("GITHUB_TOKEN", "WORKFLOW_PAT"):
         monkeypatch.delenv(name, raising=False)
     assert _resolve_github_token(_cfg_with_token_env("GITHUB_TOKEN")) is None
+
+
+def test_token_kind_names_the_type_from_prefix():
+    """令牌类型看前缀就能说清：fine-grained 令牌读未勾选仓库一律 404。"""
+    from profile_agent.cli import _token_kind
+
+    assert "classic" in _token_kind("ghp_abc")
+    assert "fine-grained" in _token_kind("github_pat_abc")
+    assert "GitHub App" in _token_kind("ghs_abc")
+    assert _token_kind("") == "匿名"
+
+
+def test_pat_404_hint_includes_actual_token_identity():
+    """404 提示要带上「本轮到底用了哪把令牌、属于谁」，否则用户只能靠猜。"""
+    from profile_agent.cli import _pat_404_hint
+
+    hint = _pat_404_hint(
+        {"error": 2, "not_found": 2}, token_desc="fine-grained（github_pat_）· 账号 ningbojian"
+    )
+    assert "fine-grained" in hint and "ningbojian" in hint

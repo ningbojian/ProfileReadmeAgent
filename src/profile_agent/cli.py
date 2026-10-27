@@ -248,8 +248,36 @@ def _resolve_github_token(cfg) -> str | None:
     return token or None
 
 
-def _pat_404_hint(stats: dict) -> str:
-    """404 占多数时的令牌提示：先说最常见的内置 token 限制，再说令牌类型。
+def _token_kind(token: str) -> str:
+    """按前缀判断令牌类型（不打印令牌本身，只看类型）。"""
+    if not token:
+        return "匿名"
+    for prefix, name in (
+        ("github_pat_", "fine-grained"),
+        ("ghp_", "classic"),
+        ("ghs_", "GitHub App 安装令牌"),
+        ("gho_", "OAuth"),
+    ):
+        if token.startswith(prefix):
+            return f"{name}（{prefix}）"
+    return "未知类型"
+
+
+def _token_desc(token: str | None, client=None) -> str:
+    """「类型 · 账号」一句话——404 时唯一能自证是不是拿错了令牌的信息。"""
+    if not token:
+        return "匿名（未配置令牌）"
+    login = ""
+    if client is not None:
+        try:
+            login = client.whoami()
+        except Exception:  # noqa: BLE001 —— 诊断信息，取不到就算了
+            login = ""
+    return f"{_token_kind(token)} · 账号 {login or '未知'}"
+
+
+def _pat_404_hint(stats: dict, token_desc: str = "") -> str:
+    """404 占多数时的令牌提示：带出本轮用的令牌类型与账号，再说排查顺序。
 
     真实原因常常是「用错了 token」或「令牌类型不对」，而不是仓库不存在——
     不提示就会被当成工具故障。
@@ -258,8 +286,10 @@ def _pat_404_hint(stats: dict) -> str:
     errors = int(stats.get("error") or 0)
     if not_found < 2 or not_found * 2 < errors:
         return ""
+    who = f"本轮读取用的令牌：{token_desc}。" if token_desc else ""
     return (
-        "⚠️ 读取失败多为 404：内置 GITHUB_TOKEN 只对当前仓库有效，用它读其他仓库一律 404；"
+        f"⚠️ 读取失败多为 404：{who}内置 GITHUB_TOKEN 只对当前仓库有效，"
+        "fine-grained 令牌对未勾选仓库同样一律 404；"
         "请确认 github.token_env 指向 WORKFLOW_PAT，且该 secret 里是 classic 令牌的最新值"
     )
 
@@ -332,6 +362,7 @@ def run(
     sleep_fn=None,
 ) -> int:
     ai_failures.reset()  # 每轮开始清空：进程内可能跑多轮（测试/连续本地运行）
+    token_desc = ""  # 「令牌类型 · 账号」诊断信息，读到仓库后填（404 提示会带上）
     fallback = os.environ.get("GITHUB_REPOSITORY_OWNER")
     try:
         cfg: Config = load_config(cfg_path, fallback_username=fallback)
@@ -365,6 +396,8 @@ def run(
         else:
             token = _resolve_github_token(cfg)
             gh_client = GitHubClient(token)
+            token_desc = _token_desc(token, gh_client)
+            print(f"GitHub 令牌：{token_desc}")
             user = gh_client.get_user(cfg.github.username)
             raw_repos = gh_client.list_repos(cfg.github.username)
             native_pins = gh_client.get_pinned_repos(cfg.github.username)
@@ -944,7 +977,7 @@ def run(
     status_line = _b_status_line(b_stats, b_reason)
     print(status_line)
     _append_summary(f"- {status_line}")
-    pat_hint = _pat_404_hint(b_stats)
+    pat_hint = _pat_404_hint(b_stats, token_desc)
     if pat_hint:
         print(pat_hint)
         _append_summary(f"- {pat_hint}")

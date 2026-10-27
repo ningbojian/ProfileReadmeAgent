@@ -186,3 +186,17 @@ def test_get_pinned_repos_http_failure_returns_none():
     )
     client = GitHubClient(token="tok", session=session)
     assert client.get_pinned_repos("alice") is None
+
+
+def test_whoami_returns_login():
+    """whoami：报出令牌属于哪个账号——404 排查时最需要的信息。"""
+    session = FakeSession([FakeResponse(json_data={"login": "ningbojian"})])
+    client = GitHubClient(token="tok", session=session)
+    assert client.whoami() == "ningbojian"
+    assert session.requests[0]["url"].endswith("/user")
+
+
+def test_whoami_returns_empty_on_auth_failure():
+    session = FakeSession([FakeResponse(status=401, json_data={}, text="Bad credentials")])
+    client = GitHubClient(token="tok", session=session)
+    assert client.whoami() == ""

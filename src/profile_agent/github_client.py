@@ -111,6 +111,18 @@ class GitHubClient:
         assert isinstance(data, dict)
         return data
 
+    def whoami(self) -> str:
+        """当前令牌所属账号（未认证/失败返回空串）。
+
+        用途只有诊断：令牌类型看前缀、账号看这里——「明明配了令牌却全 404」
+        时，两样加起来才能判断是不是拿错了令牌（别人账号 / App 安装令牌）。
+        """
+        try:
+            data, _ = self._get(f"{API}/user")
+        except GitHubError:
+            return ""
+        return str(data.get("login") or "") if isinstance(data, dict) else ""
+
     def list_repos(self, username: str) -> list[dict]:
         """列出用户全部公开仓库（owner 归属，按更新时间倒序，自动翻页）。"""
         url: str | None = f"{API}/users/{username}/repos?type=owner&sort=updated&per_page=100"
