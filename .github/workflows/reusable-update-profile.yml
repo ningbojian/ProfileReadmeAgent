@@ -53,12 +53,13 @@ jobs:
   # 清单勾选联动（2026-10-27）：用户点「全部合并」/取消，或改动某一条时，把总开关与
   # 各条目同步成一致状态。GitHub 的 markdown 任务列表没有原生父子联动，只能在
   # issues.edited 事件里补写；只改正文排版，不合并、不跑更新。
+  # 提速（2026-10-27 用户反馈「等太久」）：用户就站在清单页面上等这次回写——
+  # 不检出调用方仓库、不 pip install -e（那是 8 秒），只装 sync_cli 需要的两个包。
   sync-checklist:
     # 模板仓库自身不跑（同 update：用户的清单 issue 只存在用户仓库里）
     if: github.repository != 'ningbojian/ProfileReadmeAgent' && inputs.trigger_event == 'issues'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
       - uses: actions/checkout@v5
         with:
           repository: ${{ job.workflow_repository }}
@@ -69,14 +70,15 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: .profile-agent/pyproject.toml
-      - name: 安装依赖（工具仓库检出版本）
-        run: pip install -e ./.profile-agent
+      - name: 安装最小依赖（同步只用到 requests + pyyaml）
+        run: pip install -q requests pyyaml
       - name: 同步清单勾选
         env:
           # 内置令牌发起的编辑不会再次触发 workflow（GitHub 防循环），
           # 所以回写 body 不会自激；issues: write 已在顶层 permissions 里
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m profile_agent --config config.yaml --sync-checklist
+        # 直接跑检出的源码，不装整个包：入口不导入 cli（见 sync_cli.py 的说明）
+        run: PYTHONPATH=.profile-agent/src python3 -m profile_agent.sync_cli
 
   update:
     # 模板仓库自身永不运行：它的 README 是给用户看的说明页，不是个人主页

@@ -269,11 +269,12 @@ def test_wf_caller_triggers_on_issue_edit():
 def test_wf_issue_sync_has_own_concurrency_group():
     """清单同步单独占一个 concurrency 组，不排在等待合并（最长 30 分钟）之后。
 
-    否则用户勾了「全部合并」，同步任务排在 Queued 里迟迟不跑，看起来像没生效。
+    并且组内取消旧运行（2026-10-27 提速）：用户连点几次时，只让最后一轮去回写——
+    否则每次点击都要多排一整轮，页面上的复选框迟迟不变。
     """
     raw = yaml.safe_load(CALLER.read_text(encoding="utf-8"))
     group = raw["concurrency"]["group"]
     assert "github.event_name == 'issues'" in group
     assert "'update-profile-sync'" in group
     assert "'update-profile'" in group
-    assert raw["concurrency"]["cancel-in-progress"] is False
+    assert raw["concurrency"]["cancel-in-progress"] == "${{ github.event_name == 'issues' }}"

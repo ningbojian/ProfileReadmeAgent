@@ -2019,22 +2019,28 @@ def _sync_event(old: str, new: str) -> dict:
     }
 
 
-def test_sync_checklist_from_env_patches_on_master_toggle(tmp_path, monkeypatch):
-    from profile_agent.cli import sync_checklist_from_env
+def test_sync_cli_patches_on_master_toggle(tmp_path, monkeypatch):
+    """提速入口（2026-10-27）：sync_cli 不读 config，令牌直接用 GITHUB_TOKEN。
 
-    cfg = _write_config(tmp_path)
+    同步页面上用户就在旁边等，所以入口只加载 checklist + github_client，
+    不导入 cli（那会拉进 jinja2/anthropic 整套依赖，必须 pip install -e 才能跑）。
+    """
+    from profile_agent import sync_cli
+
     old = _SYNC_BODY
     new = old.replace("- [ ] 全部合并", "- [x] 全部合并")
     event_file = tmp_path / "event.json"
     event_file.write_text(json.dumps(_sync_event(old, new)), encoding="utf-8")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
+    monkeypatch.setenv("GITHUB_TOKEN", "g-tok")
 
     calls = []
+    tokens = []
 
     class FakeClient:
         def __init__(self, token=None, **kw):
-            self.token = token
+            tokens.append(token)
 
         def _get(self, url, **kw):
             # 服务端正文 = 本次编辑后的正文（没有更新的编辑）
@@ -2044,33 +2050,32 @@ def test_sync_checklist_from_env_patches_on_master_toggle(tmp_path, monkeypatch)
             calls.append((url, payload))
             return {}, {}
 
-    monkeypatch.setattr("profile_agent.cli.GitHubClient", FakeClient)
-    assert sync_checklist_from_env(cfg) == 0
+    monkeypatch.setattr(sync_cli, "GitHubClient", FakeClient)
+    assert sync_cli.main() == 0
     assert len(calls) == 1
     body = calls[0][1]["body"]
     assert body.count("- [x]") == 3  # 总开关 + 两条条目
+    assert tokens == ["g-tok"]  # 内置令牌，不读 config.token_env
 
 
-def test_sync_checklist_from_env_ignores_other_events(tmp_path, monkeypatch):
-    from profile_agent.cli import sync_checklist_from_env
+def test_sync_cli_ignores_other_events(tmp_path, monkeypatch):
+    from profile_agent import sync_cli
 
-    cfg = _write_config(tmp_path)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "nope.json"))
 
     def boom(*a, **k):
         raise AssertionError("非 issues 事件不该构造客户端")
 
-    monkeypatch.setattr("profile_agent.cli.GitHubClient", boom)
-    assert sync_checklist_from_env(cfg) == 0
+    monkeypatch.setattr(sync_cli, "GitHubClient", boom)
+    assert sync_cli.main() == 0
 
 
-def test_sync_checklist_from_env_degrades_to_warning(tmp_path, monkeypatch, capsys):
+def test_sync_cli_degrades_to_warning(tmp_path, monkeypatch, capsys):
     """同步失败只告警、返回 0：排版问题不能让工作流变红。"""
-    from profile_agent.cli import sync_checklist_from_env
+    from profile_agent import sync_cli
     from profile_agent.github_client import GitHubError
 
-    cfg = _write_config(tmp_path)
     old = _SYNC_BODY
     new = old.replace("- [ ] 全部合并", "- [x] 全部合并")
     event_file = tmp_path / "event.json"
@@ -2088,6 +2093,21 @@ def test_sync_checklist_from_env_degrades_to_warning(tmp_path, monkeypatch, caps
         def _patch(self, url, payload, **kw):
             raise GitHubError("boom")
 
-    monkeypatch.setattr("profile_agent.cli.GitHubClient", FakeClient)
-    assert sync_checklist_from_env(cfg) == 0
+    monkeypatch.setattr(sync_cli, "GitHubClient", FakeClient)
+    assert sync_cli.main() == 0
     assert "::warning::" in capsys.readouterr().err
+
+
+def test_sync_cli_does_not_pull_heavy_modules():
+    """锁住提速前提：入口不得导入 cli / config（否则又得 pip install -e 整套）。"""
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "profile_agent" / "sync_cli.py"
+    ).read_text(encoding="utf-8")
+    imports = [
+        ln.strip()
+        for ln in src.splitlines()
+        if ln.strip().startswith(("import ", "from "))
+    ]
+    joined = " | ".join(imports)
+    for forbidden in ("from .cli ", "from .config", "jinja2", "anthropic", "render"):
+        assert forbidden not in joined, f"sync_cli.py 不得导入 {forbidden}"

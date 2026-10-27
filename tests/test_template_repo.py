@@ -44,23 +44,25 @@ def test_reusable_syncs_checklist_on_issue_edit_only():
 
     GitHub 的 markdown 任务列表没有原生父子联动，勾「全部合并」带动下面全部条目
     只能靠 issues.edited 事件回写正文；同步只改 body，不合并、不读快照。
+
+    提速（2026-10-27）：用户就站在清单页面上等回写，所以这个 job 不检出调用方仓库、
+    不 `pip install -e`（实测 8 秒装 24 个包），只装 sync_cli 需要的两个包、直接跑源码。
     """
     jobs = _workflow()["jobs"]
     sync = jobs["sync-checklist"]
     assert "inputs.trigger_event == 'issues'" in sync["if"]
     assert "ningbojian/ProfileReadmeAgent" in sync["if"]  # 模板仓库同样不跑
-    text = " ".join(
-        str(s.get("run") or "") for s in sync["steps"]
-    )
-    assert "--sync-checklist" in text
-    assert "profile_agent --config config.yaml" in text
+    text = " ".join(str(s.get("run") or "") for s in sync["steps"])
+    assert "PYTHONPATH=.profile-agent/src python3 -m profile_agent.sync_cli" in text
+    assert "pip install -e" not in text  # 装整套 = 用户多等 8 秒
+    assert "pip install -q requests pyyaml" in text
     # 用内置令牌发起的编辑不会再触发 workflow（GitHub 防循环）
     envs = [s.get("env") or {} for s in sync["steps"]]
     assert any(e.get("GITHUB_TOKEN") == "${{ github.token }}" for e in envs)
-    # 配置与工具代码分别来自两个检出（同 update job 的检出模式）
+    # 只检出工具仓库：同步不读调用方的 config.yaml
     checkouts = [s for s in sync["steps"] if str(s.get("uses", "")).startswith("actions/checkout")]
-    assert len(checkouts) == 2
-    assert checkouts[1]["with"]["path"] == ".profile-agent"
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"]["path"] == ".profile-agent"
 
 
 def test_template_readme_is_machine_mode_so_first_run_replaces_it():

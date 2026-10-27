@@ -29,7 +29,6 @@ from .checklist import (
     find_checklist_issue,
     get_issue,
     parse_merge_targets,
-    sync_from_issue_event,
     update_checklist,
 )
 from .config import Config, ConfigError, load_config
@@ -1707,27 +1706,13 @@ def run(
 def sync_checklist_from_env(cfg_path: Path) -> int:
     """issues.edited 事件入口：只做清单全选联动，不跑更新。
 
-    勾选同步是排版糖：失败只打 warning、永远返回 0——运行时「总开关=全合并」
-    的语义仍在，不能让一次权限抖动把工作流标红。
+    实现搬到了 `sync_cli`（2026-10-27 提速）：workflow 直接跑源码、只装
+    requests + pyyaml，省掉 `pip install -e` 的 8 秒——用户就在页面上等回写。
+    `--config` 在这个模式下不再需要（令牌用内置 GITHUB_TOKEN）。
     """
-    if os.environ.get("GITHUB_EVENT_NAME") != "issues":
-        return 0
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path:
-        return 0
-    try:
-        with open(event_path, encoding="utf-8") as fh:
-            event = json.load(fh)
-        cfg: Config = load_config(
-            cfg_path, fallback_username=os.environ.get("GITHUB_REPOSITORY_OWNER")
-        )
-        # 清单读写沿用内置 GITHUB_TOKEN（IW27 权限分离：合并才用 PAT）
-        client = GitHubClient(os.environ.get(cfg.github.token_env) or None)
-        changed = sync_from_issue_event(event, client)
-        print("清单勾选已同步" if changed else "清单勾选无需调整")
-    except Exception as exc:  # noqa: BLE001 —— 排版同步失败绝不让工作流变红
-        print(f"::warning::清单勾选同步失败（不影响合并语义）：{exc}", file=sys.stderr)
-    return 0
+    from . import sync_cli
+
+    return sync_cli.main()
 
 
 def main(argv: list[str] | None = None) -> int:

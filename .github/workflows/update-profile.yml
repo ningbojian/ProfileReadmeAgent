@@ -51,9 +51,10 @@ on:
 # 防止定时与手动同时运行；不取消进行中的运行
 concurrency:
   # 清单同步单独排队：否则会排在正在等待合并（最长 30 分钟）的更新任务后面，
-  # 看起来像「勾了没反应」
+  # 看起来像「勾了没反应」。同步组内取消旧运行（2026-10-27 提速）：连点时只让
+  # 最后一轮回写，否则每点一次都要多排一整轮
   group: ${{ github.event_name == 'issues' && 'update-profile-sync' || 'update-profile' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'issues' }}
 
 permissions:
   contents: write
