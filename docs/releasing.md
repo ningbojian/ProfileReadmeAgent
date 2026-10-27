@@ -36,6 +36,8 @@
 
 5. 在 GitHub 网页创建 Release（本仓库不使用 gh CLI）：Releases → Draft a new release → 选 `v1.1.0` → 正文贴 CHANGELOG 对应段落 → Publish。移动标签 `v1` 不建 Release。
 
+   中间补丁版本（`v1.1.7`、`v1.1.8` 这类）可以攒到下一个 Release 一起写，不必每个都发——当前仓库就是 `v1.1.9` 一个 Release 概括 1.1.7–1.1.9；`v1.0.0` 之后的历史版本不补建。
+
 ## 发版前自检（针对 workflow 改动）
 
 - 改了两份 workflow 中任意一份？确认 `tests/test_workflow_yaml.py`、`tests/test_template_repo.py` 全绿——它们锁住输入契约、事件判断、提交步骤与模板 guard。
